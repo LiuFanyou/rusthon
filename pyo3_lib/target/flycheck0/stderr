@@ -1,7 +1,0 @@
-warning: unused manifest key: dependencies.pyo3.feature
-    Updating `crates-io` index
-error: failed to select a version for the requirement `rust-numpy = "^0.21"`
-candidate versions found which didn't match: 0.1.0
-location searched: `crates-io` index (which is replacing registry `crates-io`)
-required by package `pyo3_lib v0.1.0 (/home/auceptin_fang/class/python/pyo3_lib)`
-perhaps a crate was updated and forgotten to be re-vendored?
