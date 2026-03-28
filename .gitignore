@@ -1,0 +1,14 @@
+# Python 忽略项
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Rust 忽略项
+/rs_kernel/target/
+**/*.rs.bk
+
+# 编译出的动态库 (可选：如果你想把 .dll 传上去可以删掉这行，但通常建议忽略)
+*.dll
+*.so
+*.dylib
