@@ -19,7 +19,7 @@ print("Pyo3 version Result:\n", C_pyo3)
 # ==========================================
 # [路线二] ctypes 调用
 # ==========================================
-lib_path = os.path.join(os.path.dirname(__file__), "rs_kernel", "target", "release", "librs_kernel.so")
+lib_path = os.path.join(os.path.dirname(__file__), "rs_kernel", "debug", "release", "librs_kernel.so")
 rs_lib = ctypes.cdll.LoadLibrary(lib_path)
 
 # 指定 C 接口签名
@@ -36,7 +36,7 @@ rs_lib.matmul_relu_c.restype = None
 # 1. 动态提取矩阵维度
 M, K = A.shape
 K2, N = B.shape
-assert K == K2, "矩阵维度不匹配"
+assert K == K2, "矩阵维度不匹配" 
 
 # 2. 内存布局对齐 (非常关键！)
 # 确保 numpy 数组在内存中是 C 连续的 (C-contiguous)
