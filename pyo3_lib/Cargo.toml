@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 pyo3 = {version = "0.21", feature = ["extension-moduel"]}
-rust-numpy = "0.21"
+numpy = "0.21"
 ndarray = "0.15.6"
+
+[lib]
+name = "pyo3_lib"
+crate-type = ["cdylib"]
 
