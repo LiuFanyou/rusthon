@@ -27,13 +27,12 @@ def benchmark(size, iterations):
     B = np.random.rand(size, size).astype(np.float64)
     C_ctypes = np.zeros((size, size), dtype=np.float64)
 
-    # ctypes 指针提取 (在实际工程中，这也是调用开销的一部分)
+    # ctypes 指针提取
     a_ptr = A.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     b_ptr = B.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     c_ptr = C_ctypes.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
     # --- 测试 PyO3 ---
-    # 使用 lambda 包装器避免 timeit 字符串作用域问题
     pyo3_time = timeit.timeit(lambda: pyo3_lib.matmul_relu_pyo3(A, B), number=iterations)
     print(f"  -> PyO3 耗时:   {pyo3_time:.5f} 秒")
 
@@ -41,9 +40,6 @@ def benchmark(size, iterations):
     ctypes_time = timeit.timeit(lambda: rs_lib.matmul_relu_c(a_ptr, b_ptr, c_ptr, size, size, size), number=iterations)
     print(f"  -> ctypes 耗时: {ctypes_time:.5f} 秒")
 
-    # 计算倍率
-    if ctypes_time > 0:
-        print(f"  => 倍率: PyO3 是 ctypes 的 {pyo3_time / ctypes_time:.2f} 倍开销")
 
 # ==========================================
 # 3. 运行对比

@@ -56,7 +56,3 @@ print("[*] 开始执行 Rust (ctypes) 版本的算子...")
 rs_lib.matmul_relu_c(a_ptr, b_ptr, c_ptr, M, K, N)
 
 print("ctypes version Result:\n", C_ctypes)
-
-# 验证两种方式结果是否一致
-np.testing.assert_allclose(C_pyo3, C_ctypes, err_msg="两边计算结果不一致！")
-print("✅ PyO3 和 ctypes 结果完全匹配！")

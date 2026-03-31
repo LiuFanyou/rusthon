@@ -8,7 +8,6 @@ import pyo3_lib
 # ==========================================
 # 1. 准备 ctypes 环境
 # ==========================================
-# 假设你的 rs_kernel 依然独立存在，这里直接加载
 lib_path = os.path.join(os.path.dirname(__file__), "rs_kernel", "target", "release", "librs_kernel.so")
 rs_lib = ctypes.cdll.LoadLibrary(lib_path)
 
@@ -35,17 +34,14 @@ def benchmark(size, iterations):
     b_ptr_ctypes = B.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     c_ptr_ctypes = C_out.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
-    # PyO3 缝合怪用的 usize 物理地址 (整数)
+    # PyO3 缝合怪用的 usize 物理地址 
     a_addr = A.ctypes.data
     b_addr = B.ctypes.data
     c_addr = C_out.ctypes.data
 
     # ================= 对决开始 =================
 
-    # 1. 测试 安全的 PyO3 (买保险、戴安全帽版)
-   
-   #pyo3_safe_time = timeit.timeit(
-    #    lambda: pyo3_lib.matmul_relu_pyo3(A, B), 
+    # 1. 测试 安全的 PyO3 
      #   number=iterations
     #)
 #    print(f"  -> PyO3 (安全版) 耗时:   {pyo3_safe_time:.5f} 秒")
@@ -63,11 +59,6 @@ def benchmark(size, iterations):
         number=iterations
     )
     print(f"  -> PyO3 (缝合怪) 耗时:   {frankenstein_time:.5f} 秒")
-
-    # ================= 数据统计 =================
-    if ctypes_time > 0:
-        print(f"\n  => 倍率参考:")
-        print(f"     [降维打击] 缝合怪     是 ctypes 的 {frankenstein_time / ctypes_time:.2f} 倍开销")
 
 # ==========================================
 # 3. 运行对比
