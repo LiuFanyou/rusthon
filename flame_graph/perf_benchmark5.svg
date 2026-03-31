@@ -1,0 +1,3722 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="598" onload="init(evt)" viewBox="0 0 1200 598" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="598.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="581" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="581" > </text>
+<g id="frames">
+<g >
+<title>PyUnicode_InternFromString (1,001,001 samples, 0.02%)</title><rect x="33.7" y="389" width="0.3" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="36.72" y="399.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="17.1" y="181" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="20.14" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="10.3" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.29" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="245" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="255.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.43" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::gil::GILPool as core::ops::drop::Drop&gt;::drop (1,001,001 samples, 0.02%)</title><rect x="621.3" y="421" width="0.3" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="624.29" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.4" y="293" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.43" y="303.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::try_allocate_in (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="229" width="2.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1184.43" y="239.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="341" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="351.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="19.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="22.43" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="117" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="127.5" ></text>
+</g>
+<g >
+<title>PyObject_Call (1,001,001 samples, 0.02%)</title><rect x="10.0" y="517" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" ></text>
+</g>
+<g >
+<title>py::_Environ.__setitem__:&lt;frozen os&gt; (1,001,001 samples, 0.02%)</title><rect x="29.4" y="517" width="0.3" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="32.43" y="527.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="44.9" y="437" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="47.87" y="447.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="44.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="47.58" y="511.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (2,002,002 samples, 0.05%)</title><rect x="10.9" y="469" width="0.5" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="13.86" y="479.5" ></text>
+</g>
+<g >
+<title>OBJ_NAME_get (1,001,001 samples, 0.02%)</title><rect x="32.9" y="309" width="0.2" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="35.86" y="319.5" ></text>
+</g>
+<g >
+<title>PySys_GetObject (1,001,001 samples, 0.02%)</title><rect x="20.6" y="469" width="0.3" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="23.57" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.9" y="421" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.86" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.3" y="261" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.29" y="271.5" ></text>
+</g>
+<g >
+<title>PyThread_get_thread_ident (1,001,001 samples, 0.02%)</title><rect x="30.9" y="437" width="0.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="33.86" y="447.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="17.1" y="165" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="20.14" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.6" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.58" y="495.5" ></text>
+</g>
+<g >
+<title>dl_open_worker (1,001,001 samples, 0.02%)</title><rect x="23.7" y="309" width="0.3" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="26.72" y="319.5" ></text>
+</g>
+<g >
+<title>alloc::alloc::Global::alloc_impl (1,001,001 samples, 0.02%)</title><rect x="621.3" y="261" width="0.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="624.29" y="271.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="22.9" y="501" width="0.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="25.86" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="15.4" y="229" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="18.43" y="239.5" ></text>
+</g>
+<g >
+<title>_start (23,023,023 samples, 0.56%)</title><rect x="11.4" y="517" width="6.6" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="14.43" y="527.5" ></text>
+</g>
+<g >
+<title>py::benchmark.&lt;locals&gt;.&lt;lambda&gt;:/home/auceptin_fang/class/python/rusthon/v2.py (3,973,973,970 samples, 96.15%)</title><rect x="50.6" y="517" width="1134.5" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="53.58" y="527.5" >py::benchmark.&lt;locals&gt;.&lt;lambda&gt;:/home/auceptin_fang/class/python/rusthon/v2.py</text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1191.00" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="20.0" y="437" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="23.00" y="447.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pyclass::lazy_type_object::LazyTypeObjectInner::get_or_try_init::_$u7b$$u7b$closure$u7d$$u7d$::h0cd3f7098c887583 (1,001,001 samples, 0.02%)</title><rect x="1184.0" y="165" width="0.3" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="1187.00" y="175.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="197" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="207.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="13.1" y="389" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="16.14" y="399.5" ></text>
+</g>
+<g >
+<title>ffi_call (1,979,979,978 samples, 47.91%)</title><rect x="55.7" y="437" width="565.3" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="58.73" y="447.5" >ffi_call</text>
+</g>
+<g >
+<title>[python3.12] (6,006,006 samples, 0.15%)</title><rect x="13.7" y="373" width="1.7" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="16.72" y="383.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline::_$u7b$$u7b$closure$u7d$$u7d$::h18b733ebcb579481 (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="389" width="563.5" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="624.58" y="399.5" >pyo3::impl_::trampoline::trampoline::_$u7b$$u7b$closure$u7d$$u7d$::h18b733ebc..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="15.7" y="277" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="18.72" y="287.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (4,004,004 samples, 0.10%)</title><rect x="1188.3" y="501" width="1.1" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1191.29" y="511.5" ></text>
+</g>
+<g >
+<title>py::CDLL.__init__:/usr/lib/python3.12/ctypes/__init__.py (1,001,001 samples, 0.02%)</title><rect x="23.7" y="517" width="0.3" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="26.72" y="527.5" ></text>
+</g>
+<g >
+<title>py::_code:/usr/lib/python3.12/re/_compiler.py (1,001,001 samples, 0.02%)</title><rect x="36.9" y="517" width="0.2" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="39.86" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.6" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.57" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="36.9" y="469" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="39.86" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="27.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="30.43" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::instance::Bound&lt;pyo3::types::module::PyModule&gt; as pyo3::types::module::PyModuleMethods&gt;::add (1,001,001 samples, 0.02%)</title><rect x="34.9" y="149" width="0.2" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="37.86" y="159.5" ></text>
+</g>
+<g >
+<title>OPENSSL_LH_retrieve (1,001,001 samples, 0.02%)</title><rect x="32.9" y="293" width="0.2" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="35.86" y="303.5" ></text>
+</g>
+<g >
+<title>PyErr_Occurred (1,001,001 samples, 0.02%)</title><rect x="15.7" y="53" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="18.72" y="63.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="20.9" y="453" width="0.2" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="23.86" y="463.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="485" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1190.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="22.9" y="469" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.86" y="479.5" ></text>
+</g>
+<g >
+<title>Py_BytesMain (22,022,022 samples, 0.53%)</title><rect x="11.4" y="469" width="6.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="14.43" y="479.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3/dist-packages/numpy/ma/core.py (2,002,002 samples, 0.05%)</title><rect x="22.3" y="517" width="0.6" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="25.29" y="527.5" ></text>
+</g>
+<g >
+<title>py::FileFinder._fill_cache:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="25.7" y="517" width="0.3" height="15.0" fill="rgb(244,180,43)" rx="2" ry="2" />
+<text  x="28.72" y="527.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="277" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="133" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="143.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="23.1" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="26.15" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="42.9" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="45.87" y="415.5" ></text>
+</g>
+<g >
+<title>PyDict_GetItemWithError (1,001,001 samples, 0.02%)</title><rect x="20.9" y="437" width="0.2" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="23.86" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1189.1" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1192.14" y="479.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (1,001,001 samples, 0.02%)</title><rect x="35.7" y="229" width="0.3" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="38.72" y="239.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1189.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1192.71" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,971,971,968 samples, 96.10%)</title><rect x="51.2" y="501" width="1133.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="54.15" y="511.5" >_PyEval_EvalFrameDefault</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="49.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="52.44" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.3" y="277" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.29" y="287.5" ></text>
+</g>
+<g >
+<title>[libffi.so.8.1.4] (1,979,979,978 samples, 47.91%)</title><rect x="55.7" y="421" width="565.3" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="58.73" y="431.5" >[libffi.so.8.1.4]</text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.9" y="373" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.86" y="383.5" ></text>
+</g>
+<g >
+<title>py::SourceFileLoader.path_stats:&lt;frozen importlib._bootstrap_external&gt; (2,002,002 samples, 0.05%)</title><rect x="28.3" y="517" width="0.6" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="31.29" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="22.9" y="421" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.86" y="431.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="16.3" y="293" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="19.29" y="303.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::with_capacity_in (1,001,001 samples, 0.02%)</title><rect x="621.3" y="309" width="0.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="624.29" y="319.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="213" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="223.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="34.9" y="53" width="0.2" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="37.86" y="63.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="30.3" y="469" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="33.29" y="479.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="28.0" y="453" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="31.00" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::dealloc (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="453" width="0.3" height="15.0" fill="rgb(223,85,20)" rx="2" ry="2" />
+<text  x="1190.43" y="463.5" ></text>
+</g>
+<g >
+<title>dlopen_implementation (4,004,004 samples, 0.10%)</title><rect x="35.7" y="405" width="1.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="38.72" y="415.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="18.9" y="421" width="0.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="21.86" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.43" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.9" y="389" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.86" y="399.5" ></text>
+</g>
+<g >
+<title>_PyCodec_Lookup (2,002,002 samples, 0.05%)</title><rect x="16.9" y="341" width="0.5" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="19.86" y="351.5" ></text>
+</g>
+<g >
+<title>py::addpackage:&lt;frozen site&gt; (1,001,001 samples, 0.02%)</title><rect x="49.7" y="517" width="0.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="52.72" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1191.00" y="511.5" ></text>
+</g>
+<g >
+<title>py::getargs:/usr/lib/python3/dist-packages/numpy/_utils/_inspect.py (1,001,001 samples, 0.02%)</title><rect x="1186.6" y="517" width="0.3" height="15.0" fill="rgb(241,168,40)" rx="2" ry="2" />
+<text  x="1189.57" y="527.5" ></text>
+</g>
+<g >
+<title>_PyObject_CallMethod (1,001,001 samples, 0.02%)</title><rect x="17.4" y="357" width="0.3" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="20.43" y="367.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="23.4" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="26.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="24.3" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.29" y="463.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3/dist-packages/numpy/_typing/_nested_sequence.py (1,001,001 samples, 0.02%)</title><rect x="21.4" y="517" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="24.43" y="527.5" ></text>
+</g>
+<g >
+<title>py::ABCMeta.__new__:&lt;frozen abc&gt; (3,003,003 samples, 0.07%)</title><rect x="22.9" y="517" width="0.8" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="25.86" y="527.5" ></text>
+</g>
+<g >
+<title>py::NamedTupleMeta.__new__:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="27.4" y="517" width="0.3" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="30.43" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="1186.9" y="501" width="0.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1189.86" y="511.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,001,001 samples, 0.02%)</title><rect x="20.3" y="485" width="0.3" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="23.29" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="42.0" y="357" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="45.01" y="367.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="20.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="23.00" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1186.3" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1189.28" y="463.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="21.4" y="437" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="24.43" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="30.3" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="33.29" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.00" y="479.5" ></text>
+</g>
+<g >
+<title>_Py_hashtable_get (1,001,001 samples, 0.02%)</title><rect x="44.0" y="437" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="47.01" y="447.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="261" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="271.5" ></text>
+</g>
+<g >
+<title>PyObject_ClearWeakRefs (1,001,001 samples, 0.02%)</title><rect x="30.6" y="421" width="0.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="33.58" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="101" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="111.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (1,001,001 samples, 0.02%)</title><rect x="23.7" y="293" width="0.3" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="26.72" y="303.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="389" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="399.5" ></text>
+</g>
+<g >
+<title>OPENSSL_LH_delete (1,001,001 samples, 0.02%)</title><rect x="17.7" y="357" width="0.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="20.72" y="367.5" ></text>
+</g>
+<g >
+<title>dl_open_worker_begin (1,001,001 samples, 0.02%)</title><rect x="23.7" y="277" width="0.3" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="26.72" y="287.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind (1,001,001 samples, 0.02%)</title><rect x="34.9" y="373" width="0.2" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="37.86" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="42.3" y="341" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="45.29" y="351.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="24.6" y="501" width="0.8" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="27.57" y="511.5" ></text>
+</g>
+<g >
+<title>py::_find_and_load_unlocked:&lt;frozen importlib._bootstrap&gt; (3,003,003 samples, 0.07%)</title><rect x="43.7" y="517" width="0.9" height="15.0" fill="rgb(222,81,19)" rx="2" ry="2" />
+<text  x="46.72" y="527.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="341" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="22.6" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.57" y="479.5" ></text>
+</g>
+<g >
+<title>PySlice_Unpack (1,001,001 samples, 0.02%)</title><rect x="47.4" y="469" width="0.3" height="15.0" fill="rgb(206,8,1)" rx="2" ry="2" />
+<text  x="50.44" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="373" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="383.5" ></text>
+</g>
+<g >
+<title>_PyObject_GC_NewVar (1,001,001 samples, 0.02%)</title><rect x="1189.1" y="453" width="0.3" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1192.14" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="22.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.00" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (6,006,006 samples, 0.15%)</title><rect x="51.7" y="469" width="1.7" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="54.72" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::alloc::Global as core::alloc::Allocator&gt;::allocate (1,001,001 samples, 0.02%)</title><rect x="621.3" y="277" width="0.3" height="15.0" fill="rgb(225,96,22)" rx="2" ry="2" />
+<text  x="624.29" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="341" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1186.3" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1189.28" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.9" y="453" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.86" y="463.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,001,001 samples, 0.02%)</title><rect x="16.9" y="229" width="0.2" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="19.86" y="239.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pyclass::lazy_type_object::LazyTypeObject&lt;T&gt;::get_or_try_init (1,001,001 samples, 0.02%)</title><rect x="1184.0" y="197" width="0.3" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1187.00" y="207.5" ></text>
+</g>
+<g >
+<title>_dl_map_object (1,001,001 samples, 0.02%)</title><rect x="35.7" y="197" width="0.3" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="38.72" y="207.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="22.6" y="421" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.57" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="36.9" y="485" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="39.86" y="495.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::&lt;impl pyo3_lib::pyo3_lib::MakeDef&gt;::make_def::__pyo3_pymodule (1,001,001 samples, 0.02%)</title><rect x="34.9" y="213" width="0.2" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="37.86" y="223.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="27.7" y="501" width="0.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="30.72" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="27.1" y="421" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="30.15" y="431.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="32.9" y="325" width="0.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="35.86" y="335.5" ></text>
+</g>
+<g >
+<title>PyObject_Free (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="341" width="0.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="1190.43" y="351.5" ></text>
+</g>
+<g >
+<title>PyCell_New (1,001,001 samples, 0.02%)</title><rect x="50.3" y="485" width="0.3" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="53.30" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_Malloc (1,001,001 samples, 0.02%)</title><rect x="43.2" y="389" width="0.2" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="46.15" y="399.5" ></text>
+</g>
+<g >
+<title>PyBytes_FromStringAndSize (1,001,001 samples, 0.02%)</title><rect x="16.9" y="101" width="0.2" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="19.86" y="111.5" ></text>
+</g>
+<g >
+<title>___dlopen (4,004,004 samples, 0.10%)</title><rect x="35.7" y="421" width="1.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="38.72" y="431.5" ></text>
+</g>
+<g >
+<title>_PyTuple_MaybeUntrack (1,001,001 samples, 0.02%)</title><rect x="19.1" y="437" width="0.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="22.15" y="447.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pymodule::ModuleDef::make_module::_$u7b$$u7b$closure$u7d$$u7d$::h3efaf27ca1362ac5 (1,001,001 samples, 0.02%)</title><rect x="34.9" y="229" width="0.2" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="37.86" y="239.5" ></text>
+</g>
+<g >
+<title>[_ctypes.cpython-312-x86_64-linux-gnu.so] (5,005,005 samples, 0.12%)</title><rect x="54.0" y="405" width="1.4" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="57.01" y="415.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="21.1" y="517" width="0.3" height="15.0" fill="rgb(233,130,31)" rx="2" ry="2" />
+<text  x="24.15" y="527.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline::_$u7b$$u7b$closure$u7d$$u7d$::h18b733ebcb579481 (6,006,006 samples, 0.15%)</title><rect x="51.7" y="357" width="1.7" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="54.72" y="367.5" ></text>
+</g>
+<g >
+<title>&lt;ndarray::ArrayBase&lt;ndarray::data_repr::OwnedRepr&lt;A&gt;,D&gt; as numpy::convert::IntoPyArray&gt;::into_pyarray_bound (3,003,003 samples, 0.07%)</title><rect x="1183.7" y="309" width="0.9" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="1186.71" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="10.3" y="501" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.29" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="15.4" y="277" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="18.43" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (21,021,021 samples, 0.51%)</title><rect x="37.4" y="485" width="6.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="40.44" y="495.5" ></text>
+</g>
+<g >
+<title>alloc::alloc::Global::alloc_impl (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="197" width="2.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1184.43" y="207.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/struct.py (1,001,001 samples, 0.02%)</title><rect x="20.6" y="517" width="0.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="23.57" y="527.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1,001,001 samples, 0.02%)</title><rect x="32.0" y="453" width="0.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="35.01" y="463.5" ></text>
+</g>
+<g >
+<title>__dcigettext (1,001,001 samples, 0.02%)</title><rect x="47.7" y="421" width="0.3" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="50.72" y="431.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="40.0" y="373" width="0.3" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="43.01" y="383.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="44.9" y="485" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="47.87" y="495.5" ></text>
+</g>
+<g >
+<title>OPENSSL_LH_doall_arg (1,001,001 samples, 0.02%)</title><rect x="32.9" y="341" width="0.2" height="15.0" fill="rgb(213,36,8)" rx="2" ry="2" />
+<text  x="35.86" y="351.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::&lt;impl pyo3_lib::matmul_relu_pyo3::MakeDef&gt;::_PYO3_DEF::trampoline (6,006,006 samples, 0.15%)</title><rect x="51.7" y="453" width="1.7" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="54.72" y="463.5" ></text>
+</g>
+<g >
+<title>_Py_hashtable_get (1,001,001 samples, 0.02%)</title><rect x="33.7" y="373" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.72" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="31.7" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="34.72" y="495.5" ></text>
+</g>
+<g >
+<title>_dlerror_run (4,004,004 samples, 0.10%)</title><rect x="35.7" y="389" width="1.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="38.72" y="399.5" ></text>
+</g>
+<g >
+<title>PyCMethod_New (1,001,001 samples, 0.02%)</title><rect x="48.3" y="453" width="0.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="51.29" y="463.5" ></text>
+</g>
+<g >
+<title>PyInit__umath_linalg (1,001,001 samples, 0.02%)</title><rect x="34.6" y="437" width="0.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="37.58" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;T as alloc::vec::spec_from_elem::SpecFromElem&gt;::from_elem (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="277" width="2.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1184.43" y="287.5" ></text>
+</g>
+<g >
+<title>PyObject_IS_GC (1,001,001 samples, 0.02%)</title><rect x="19.1" y="421" width="0.3" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="22.15" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="29.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="32.43" y="479.5" ></text>
+</g>
+<g >
+<title>py::SourceLoader.get_code:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="28.9" y="517" width="0.2" height="15.0" fill="rgb(247,196,47)" rx="2" ry="2" />
+<text  x="31.86" y="527.5" ></text>
+</g>
+<g >
+<title>PyMem_RawFree (1,001,001 samples, 0.02%)</title><rect x="22.6" y="405" width="0.3" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="25.57" y="415.5" ></text>
+</g>
+<g >
+<title>CRYPTO_THREAD_run_once (1,001,001 samples, 0.02%)</title><rect x="33.1" y="309" width="0.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="36.15" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="33.4" y="293" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="303.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1,001,001 samples, 0.02%)</title><rect x="49.4" y="453" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="52.44" y="463.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::try_allocate_in (1,001,001 samples, 0.02%)</title><rect x="621.3" y="293" width="0.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="624.29" y="303.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (2,002,002 samples, 0.05%)</title><rect x="10.9" y="437" width="0.5" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="13.86" y="447.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3/dist-packages/numpy/lib/polynomial.py (1,001,001 samples, 0.02%)</title><rect x="22.0" y="517" width="0.3" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="25.00" y="527.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="357" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="367.5" ></text>
+</g>
+<g >
+<title>PyUnicode_FromFormat (1,001,001 samples, 0.02%)</title><rect x="30.3" y="437" width="0.3" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="33.29" y="447.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::with_capacity_zeroed_in (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="245" width="2.3" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1184.43" y="255.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="49.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="52.72" y="511.5" ></text>
+</g>
+<g >
+<title>core::num::&lt;impl usize&gt;::unchecked_add (67,067,067 samples, 1.62%)</title><rect x="1158.3" y="277" width="19.1" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1161.28" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.1" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.15" y="495.5" ></text>
+</g>
+<g >
+<title>py::_path_stat:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="47.7" y="517" width="0.3" height="15.0" fill="rgb(220,72,17)" rx="2" ry="2" />
+<text  x="50.72" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="25.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="28.43" y="479.5" ></text>
+</g>
+<g >
+<title>py::ExtensionFileLoader.exec_module:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="25.4" y="517" width="0.3" height="15.0" fill="rgb(252,216,51)" rx="2" ry="2" />
+<text  x="28.43" y="527.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind::do_call (1,001,001 samples, 0.02%)</title><rect x="34.9" y="357" width="0.2" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="37.86" y="367.5" ></text>
+</g>
+<g >
+<title>_PyType_Lookup (1,001,001 samples, 0.02%)</title><rect x="1188.3" y="453" width="0.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="1191.29" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3::pyclass_init::PyClassInitializer&lt;T&gt;::create_class_object_of_type (1,001,001 samples, 0.02%)</title><rect x="1184.3" y="229" width="0.3" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="1187.28" y="239.5" ></text>
+</g>
+<g >
+<title>PyObject_SetAttr (1,001,001 samples, 0.02%)</title><rect x="34.9" y="85" width="0.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="37.86" y="95.5" ></text>
+</g>
+<g >
+<title>pyo3::instance::Bound&lt;T&gt;::new (2,002,002 samples, 0.05%)</title><rect x="1184.0" y="261" width="0.6" height="15.0" fill="rgb(235,139,33)" rx="2" ry="2" />
+<text  x="1187.00" y="271.5" ></text>
+</g>
+<g >
+<title>_PyTuple_MaybeUntrack (1,001,001 samples, 0.02%)</title><rect x="12.6" y="373" width="0.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="15.57" y="383.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="21.1" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.15" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="1189.7" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1192.71" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="32.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="35.01" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="18.9" y="485" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="21.86" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="41.7" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="44.72" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="55.2" y="357" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="58.15" y="367.5" ></text>
+</g>
+<g >
+<title>PyImport_Import (1,001,001 samples, 0.02%)</title><rect x="17.1" y="293" width="0.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="20.14" y="303.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="19.1" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="22.15" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="20.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="23.57" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="29.1" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="32.15" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="1187.1" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="1190.14" y="495.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="437" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_Repr (1,001,001 samples, 0.02%)</title><rect x="19.7" y="485" width="0.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="22.72" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="20.0" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="23.00" y="495.5" ></text>
+</g>
+<g >
+<title>_PyType_Lookup (1,001,001 samples, 0.02%)</title><rect x="54.6" y="277" width="0.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="57.58" y="287.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="17.7" y="341" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="20.72" y="351.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="17.7" y="325" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="20.72" y="335.5" ></text>
+</g>
+<g >
+<title>PyDict_SetItemString (1,001,001 samples, 0.02%)</title><rect x="34.6" y="421" width="0.3" height="15.0" fill="rgb(253,222,53)" rx="2" ry="2" />
+<text  x="37.58" y="431.5" ></text>
+</g>
+<g >
+<title>_$LT$pyo3..gil..GILPool$u20$as$u20$core..ops..drop..Drop$GT$::drop::_$u7b$$u7b$closure$u7d$$u7d$::h6ccb035b84cc7b69 (1,001,001 samples, 0.02%)</title><rect x="621.3" y="373" width="0.3" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="624.29" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::fastcall_with_keywords::_$u7b$$u7b$closure$u7d$$u7d$::h3fdd66324f8d6de1 (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="373" width="563.5" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="624.58" y="383.5" >pyo3::impl_::trampoline::fastcall_with_keywords::_$u7b$$u7b$closure$u7d$$u7d$..</text>
+</g>
+<g >
+<title>pyo3_lib::__pyfunction_matmul_relu_pyo3 (6,006,006 samples, 0.15%)</title><rect x="51.7" y="325" width="1.7" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="54.72" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="447.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="16.3" y="309" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="19.29" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="54.3" y="341" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="57.30" y="351.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="48.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="51.01" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.9" y="469" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.86" y="479.5" ></text>
+</g>
+<g >
+<title>PyGC_Collect (5,005,005 samples, 0.12%)</title><rect x="11.4" y="421" width="1.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="14.43" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1185.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1188.43" y="511.5" ></text>
+</g>
+<g >
+<title>numpy::convert::IntoPyArray::into_pyarray (5,005,005 samples, 0.12%)</title><rect x="1183.7" y="325" width="1.4" height="15.0" fill="rgb(242,171,41)" rx="2" ry="2" />
+<text  x="1186.71" y="335.5" ></text>
+</g>
+<g >
+<title>elf_machine_rela (3,003,003 samples, 0.07%)</title><rect x="36.0" y="197" width="0.9" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="39.01" y="207.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.9" y="405" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.86" y="415.5" ></text>
+</g>
+<g >
+<title>py::PathFinder.find_spec:&lt;frozen importlib._bootstrap_external&gt; (2,002,002 samples, 0.05%)</title><rect x="27.7" y="517" width="0.6" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="30.72" y="527.5" ></text>
+</g>
+<g >
+<title>std::panic::catch_unwind (1,001,001 samples, 0.02%)</title><rect x="34.9" y="389" width="0.2" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="37.86" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.4" y="261" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="271.5" ></text>
+</g>
+<g >
+<title>__nextafterl (1,001,001 samples, 0.02%)</title><rect x="11.1" y="405" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="14.14" y="415.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1185.1" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1188.14" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (5,005,005 samples, 0.12%)</title><rect x="16.0" y="357" width="1.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.00" y="367.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.7" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.72" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.1" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.15" y="463.5" ></text>
+</g>
+<g >
+<title>OPENSSL_LH_doall (1,001,001 samples, 0.02%)</title><rect x="17.7" y="389" width="0.3" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="20.72" y="399.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="21.1" y="437" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="24.15" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (1,001,001 samples, 0.02%)</title><rect x="46.3" y="453" width="0.3" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="49.29" y="463.5" ></text>
+</g>
+<g >
+<title>py::_call_with_frames_removed:&lt;frozen importlib._bootstrap&gt; (14,014,014 samples, 0.34%)</title><rect x="32.9" y="517" width="4.0" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="35.86" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="19.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="22.72" y="511.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/__future__.py (1,001,001 samples, 0.02%)</title><rect x="18.9" y="517" width="0.2" height="15.0" fill="rgb(228,108,26)" rx="2" ry="2" />
+<text  x="21.86" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="48.6" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="51.58" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;usize as core::iter::range::Step&gt;::forward_unchecked (67,067,067 samples, 1.62%)</title><rect x="1158.3" y="293" width="19.1" height="15.0" fill="rgb(249,204,48)" rx="2" ry="2" />
+<text  x="1161.28" y="303.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="45.2" y="469" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="48.15" y="479.5" ></text>
+</g>
+<g >
+<title>pyo3::sync::GILOnceCell&lt;T&gt;::init (1,001,001 samples, 0.02%)</title><rect x="34.9" y="245" width="0.2" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="37.86" y="255.5" ></text>
+</g>
+<g >
+<title>PyErr_SetFromErrnoWithFilenameObject (1,001,001 samples, 0.02%)</title><rect x="47.7" y="469" width="0.3" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="50.72" y="479.5" ></text>
+</g>
+<g >
+<title>pyo3::sync::GILOnceCell&lt;T&gt;::get_or_try_init (1,001,001 samples, 0.02%)</title><rect x="34.9" y="261" width="0.2" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="37.86" y="271.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="44.9" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="47.87" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="32.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="35.29" y="511.5" ></text>
+</g>
+<g >
+<title>__GI___libc_malloc (1,001,001 samples, 0.02%)</title><rect x="621.3" y="229" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="624.29" y="239.5" ></text>
+</g>
+<g >
+<title>PyObject_Free (1,001,001 samples, 0.02%)</title><rect x="26.0" y="485" width="0.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="29.00" y="495.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pyclass::lazy_type_object::LazyTypeObjectInner::get_or_try_init (1,001,001 samples, 0.02%)</title><rect x="1184.0" y="181" width="0.3" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1187.00" y="191.5" ></text>
+</g>
+<g >
+<title>PySys_GetObject (1,001,001 samples, 0.02%)</title><rect x="20.3" y="469" width="0.3" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="23.29" y="479.5" ></text>
+</g>
+<g >
+<title>_PyDict_GetItem_KnownHash (1,001,001 samples, 0.02%)</title><rect x="1188.3" y="421" width="0.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="1191.29" y="431.5" ></text>
+</g>
+<g >
+<title>__run_exit_handlers (1,001,001 samples, 0.02%)</title><rect x="17.7" y="453" width="0.3" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="20.72" y="463.5" ></text>
+</g>
+<g >
+<title>py::FileFinder.find_spec:&lt;frozen importlib._bootstrap_external&gt; (3,003,003 samples, 0.07%)</title><rect x="26.0" y="517" width="0.9" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="29.00" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="1188.6" y="485" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="495.5" ></text>
+</g>
+<g >
+<title>_$LT$ndarray..dimension..dim..Dim$LT$$u5b$usize$u3b$$u20$2$u5d$$GT$$u20$as$u20$ndarray..dimension..dimension_trait..Dimension$GT$::stride_offset_checked::h13c4ef280d71a7ac (14,014,014 samples, 0.34%)</title><rect x="1177.4" y="293" width="4.0" height="15.0" fill="rgb(236,146,35)" rx="2" ry="2" />
+<text  x="1180.43" y="303.5" ></text>
+</g>
+<g >
+<title>[python3.12] (19,019,019 samples, 0.46%)</title><rect x="38.0" y="437" width="5.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="41.01" y="447.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="453" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="463.5" ></text>
+</g>
+<g >
+<title>[_ctypes.cpython-312-x86_64-linux-gnu.so] (1,988,988,987 samples, 48.12%)</title><rect x="53.4" y="453" width="567.9" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="56.44" y="463.5" >[_ctypes.cpython-312-x86_64-linux-gnu.so]</text>
+</g>
+<g >
+<title>&lt;pyo3::instance::Bound&lt;pyo3::types::any::PyAny&gt; as pyo3::types::any::PyAnyMethods&gt;::setattr::inner (1,001,001 samples, 0.02%)</title><rect x="34.9" y="101" width="0.2" height="15.0" fill="rgb(209,21,5)" rx="2" ry="2" />
+<text  x="37.86" y="111.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="15.4" y="437" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="447.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::module_init::_$u7b$$u7b$closure$u7d$$u7d$::ha549dd0cdae271fe (1,001,001 samples, 0.02%)</title><rect x="34.9" y="325" width="0.2" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="37.86" y="335.5" ></text>
+</g>
+<g >
+<title>PyType_IsSubtype (1,001,001 samples, 0.02%)</title><rect x="55.2" y="325" width="0.2" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="58.15" y="335.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="37.1" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="40.15" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (3,003,003 samples, 0.07%)</title><rect x="14.6" y="357" width="0.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="17.57" y="367.5" ></text>
+</g>
+<g >
+<title>_PyCode_New (2,002,002 samples, 0.05%)</title><rect x="42.9" y="421" width="0.5" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="45.87" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_IsSubclass (1,001,001 samples, 0.02%)</title><rect x="54.9" y="389" width="0.3" height="15.0" fill="rgb(242,174,41)" rx="2" ry="2" />
+<text  x="57.87" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="245" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="255.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.00" y="463.5" ></text>
+</g>
+<g >
+<title>_PyObject_Call_Prepend (1,001,001 samples, 0.02%)</title><rect x="22.6" y="437" width="0.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="25.57" y="447.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="29.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="32.43" y="511.5" ></text>
+</g>
+<g >
+<title>std::thread::local::LocalKey&lt;T&gt;::try_with (1,001,001 samples, 0.02%)</title><rect x="621.3" y="389" width="0.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="624.29" y="399.5" ></text>
+</g>
+<g >
+<title>ndarray::arraytraits::&lt;impl core::ops::index::IndexMut&lt;I&gt; for ndarray::ArrayBase&lt;S,D&gt;&gt;::index_mut (14,014,014 samples, 0.34%)</title><rect x="1177.4" y="325" width="4.0" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="1180.43" y="335.5" ></text>
+</g>
+<g >
+<title>std::panic::catch_unwind (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="421" width="0.3" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="1190.43" y="431.5" ></text>
+</g>
+<g >
+<title>_PyObject_LookupAttr (1,001,001 samples, 0.02%)</title><rect x="21.4" y="469" width="0.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="24.43" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Call (2,002,002 samples, 0.05%)</title><rect x="24.9" y="485" width="0.5" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="27.86" y="495.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="30.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="33.29" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (3,003,003 samples, 0.07%)</title><rect x="16.0" y="341" width="0.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.00" y="351.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::fastcall_with_keywords (6,006,006 samples, 0.15%)</title><rect x="51.7" y="437" width="1.7" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="54.72" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_Str (1,001,001 samples, 0.02%)</title><rect x="45.4" y="485" width="0.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="48.44" y="495.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline::_$u7b$$u7b$closure$u7d$$u7d$::h97d4a05dd3fb247b (1,001,001 samples, 0.02%)</title><rect x="34.9" y="341" width="0.2" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="37.86" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="415.5" ></text>
+</g>
+<g >
+<title>[libffi.so.8.1.4] (1,979,979,978 samples, 47.91%)</title><rect x="55.7" y="405" width="565.3" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="58.73" y="415.5" >[libffi.so.8.1.4]</text>
+</g>
+<g >
+<title>PyObject_Call (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="421" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1191.00" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="277" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="479.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (1,001,001 samples, 0.02%)</title><rect x="23.7" y="373" width="0.3" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="26.72" y="383.5" ></text>
+</g>
+<g >
+<title>do_lookup_x (3,003,003 samples, 0.07%)</title><rect x="36.0" y="149" width="0.9" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="39.01" y="159.5" ></text>
+</g>
+<g >
+<title>ndarray::impl_constructors::&lt;impl ndarray::ArrayBase&lt;S,D&gt;&gt;::from_elem (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="309" width="2.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1184.43" y="319.5" ></text>
+</g>
+<g >
+<title>PyObject_IsInstance (2,002,002 samples, 0.05%)</title><rect x="54.3" y="389" width="0.6" height="15.0" fill="rgb(213,41,9)" rx="2" ry="2" />
+<text  x="57.30" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::alloc::Global as core::alloc::Allocator&gt;::allocate_zeroed (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="213" width="2.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1184.43" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="31.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="34.43" y="479.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (2,002,002 samples, 0.05%)</title><rect x="32.9" y="405" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="35.86" y="415.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="46.3" y="469" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="49.29" y="479.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (1,001,001 samples, 0.02%)</title><rect x="34.9" y="69" width="0.2" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="37.86" y="79.5" ></text>
+</g>
+<g >
+<title>PyObject_Malloc (1,001,001 samples, 0.02%)</title><rect x="1189.1" y="437" width="0.3" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="1192.14" y="447.5" ></text>
+</g>
+<g >
+<title>py::_verbose_message:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="49.2" y="517" width="0.2" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="52.15" y="527.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="33.4" y="373" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="36.43" y="383.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::matmul_relu_pyo3 (6,006,006 samples, 0.15%)</title><rect x="51.7" y="309" width="1.7" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="54.72" y="319.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="19.4" y="437" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="22.43" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;numpy::slice_container::PySliceContainer as pyo3::type_object::PyTypeInfo&gt;::type_object_raw (1,001,001 samples, 0.02%)</title><rect x="1184.0" y="229" width="0.3" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1187.00" y="239.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (14,014,014 samples, 0.34%)</title><rect x="32.9" y="501" width="4.0" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="35.86" y="511.5" ></text>
+</g>
+<g >
+<title>pyo3::gil::register_owned (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="229" width="0.5" height="15.0" fill="rgb(249,205,49)" rx="2" ry="2" />
+<text  x="1187.57" y="239.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="16.9" y="197" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="19.86" y="207.5" ></text>
+</g>
+<g >
+<title>py::array_function_dispatch.&lt;locals&gt;.decorator:/usr/lib/python3/dist-packages/numpy/core/overrides.py (1,001,001 samples, 0.02%)</title><rect x="50.0" y="517" width="0.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="53.01" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="42.3" y="293" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="45.29" y="303.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (2,002,002 samples, 0.05%)</title><rect x="38.9" y="405" width="0.5" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="41.86" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="421" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="431.5" ></text>
+</g>
+<g >
+<title>py::_compile_bytecode:&lt;frozen importlib._bootstrap_external&gt; (21,021,021 samples, 0.51%)</title><rect x="37.4" y="517" width="6.0" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="40.44" y="527.5" ></text>
+</g>
+<g >
+<title>Py_FinalizeEx (14,014,014 samples, 0.34%)</title><rect x="11.4" y="437" width="4.0" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="14.43" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="33.4" y="405" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="415.5" ></text>
+</g>
+<g >
+<title>translate (1,001,001 samples, 0.02%)</title><rect x="47.7" y="437" width="0.3" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="50.72" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (14,014,014 samples, 0.34%)</title><rect x="32.9" y="469" width="4.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="35.86" y="479.5" ></text>
+</g>
+<g >
+<title>&lt;T as pyo3::conversion::FromPyPointer&gt;::from_owned_ptr_or_opt (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="245" width="0.5" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1187.57" y="255.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="15.4" y="293" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="18.43" y="303.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/opcode.py (1,001,001 samples, 0.02%)</title><rect x="19.7" y="517" width="0.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="22.72" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="33.4" y="421" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (2,002,002 samples, 0.05%)</title><rect x="54.3" y="373" width="0.6" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="57.30" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="15.4" y="453" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="463.5" ></text>
+</g>
+<g >
+<title>[_ctypes.cpython-312-x86_64-linux-gnu.so] (1,988,988,987 samples, 48.12%)</title><rect x="53.4" y="469" width="567.9" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="56.44" y="479.5" >[_ctypes.cpython-312-x86_64-linux-gnu.so]</text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="15.4" y="213" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="18.43" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (21,021,021 samples, 0.51%)</title><rect x="37.4" y="453" width="6.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="40.44" y="463.5" ></text>
+</g>
+<g >
+<title>core::ops::function::FnOnce::call_once (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="197" width="0.5" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1187.57" y="207.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="26.0" y="501" width="0.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="29.00" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::pyclass_init::PyNativeTypeInitializer&lt;T&gt; as pyo3::pyclass_init::PyObjectInit&lt;T&gt;&gt;::into_new_object::inner (1,001,001 samples, 0.02%)</title><rect x="1184.3" y="197" width="0.3" height="15.0" fill="rgb(216,50,12)" rx="2" ry="2" />
+<text  x="1187.28" y="207.5" ></text>
+</g>
+<g >
+<title>_PyObject_NewVar (1,001,001 samples, 0.02%)</title><rect x="43.2" y="405" width="0.2" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="46.15" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="50.9" y="501" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="53.87" y="511.5" ></text>
+</g>
+<g >
+<title>__log10f (1,001,001 samples, 0.02%)</title><rect x="10.9" y="405" width="0.2" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="13.86" y="415.5" ></text>
+</g>
+<g >
+<title>py::update_wrapper:/usr/lib/python3.12/functools.py (1,001,001 samples, 0.02%)</title><rect x="1189.4" y="517" width="0.3" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="1192.43" y="527.5" ></text>
+</g>
+<g >
+<title>_int_malloc (1,001,001 samples, 0.02%)</title><rect x="49.4" y="437" width="0.3" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="52.44" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="18.3" y="469" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.29" y="479.5" ></text>
+</g>
+<g >
+<title>pyo3::gil::OWNED_OBJECTS::_$u7b$$u7b$constant$u7d$$u7d$::_$u7b$$u7b$closure$u7d$$u7d$::h70d6dcf0a3096540 (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="181" width="0.5" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="1187.57" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1185.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1188.43" y="463.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (2,002,002 samples, 0.05%)</title><rect x="10.9" y="453" width="0.5" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="13.86" y="463.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="47.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="50.44" y="511.5" ></text>
+</g>
+<g >
+<title>PyUnicode_FSConverter (1,001,001 samples, 0.02%)</title><rect x="29.4" y="437" width="0.3" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="32.43" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.6" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.58" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="421" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1186.3" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1189.28" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.3" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.29" y="447.5" ></text>
+</g>
+<g >
+<title>py::SubPattern.getwidth:/usr/lib/python3.12/re/_parser.py (1,001,001 samples, 0.02%)</title><rect x="29.1" y="517" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="32.15" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="48.9" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="51.87" y="511.5" ></text>
+</g>
+<g >
+<title>__strdup (1,001,001 samples, 0.02%)</title><rect x="35.7" y="165" width="0.3" height="15.0" fill="rgb(232,125,29)" rx="2" ry="2" />
+<text  x="38.72" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.00" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (1,001,001 samples, 0.02%)</title><rect x="16.9" y="325" width="0.2" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="19.86" y="335.5" ></text>
+</g>
+<g >
+<title>dlopen_doit (4,004,004 samples, 0.10%)</title><rect x="35.7" y="341" width="1.2" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="38.72" y="351.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="32.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="35.01" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="389" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.0" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.00" y="415.5" ></text>
+</g>
+<g >
+<title>py::cache_from_source:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="1185.1" y="517" width="0.3" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="1188.14" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (12,012,012 samples, 0.29%)</title><rect x="39.4" y="405" width="3.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="42.44" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="24.9" y="421" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.86" y="431.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,001,001 samples, 0.02%)</title><rect x="17.1" y="229" width="0.3" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="20.14" y="239.5" ></text>
+</g>
+<g >
+<title>&lt;core::ops::range::Range&lt;T&gt; as core::iter::range::RangeIteratorImpl&gt;::spec_next (4,004,004 samples, 0.10%)</title><rect x="52.3" y="277" width="1.1" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="55.30" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="23.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="26.43" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="24.3" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.29" y="495.5" ></text>
+</g>
+<g >
+<title>PyEval_RestoreThread (2,002,002 samples, 0.05%)</title><rect x="53.4" y="437" width="0.6" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="56.44" y="447.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (21,021,021 samples, 0.51%)</title><rect x="37.4" y="501" width="6.0" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="40.44" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="48.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="51.29" y="511.5" ></text>
+</g>
+<g >
+<title>__libc_start_main_impl (23,023,023 samples, 0.56%)</title><rect x="11.4" y="501" width="6.6" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="14.43" y="511.5" ></text>
+</g>
+<g >
+<title>_Py_NewReference (1,001,001 samples, 0.02%)</title><rect x="16.9" y="85" width="0.2" height="15.0" fill="rgb(227,104,24)" rx="2" ry="2" />
+<text  x="19.86" y="95.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pymodule::ModuleDef::make_module (1,001,001 samples, 0.02%)</title><rect x="34.9" y="277" width="0.2" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="37.86" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="133" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="143.5" ></text>
+</g>
+<g >
+<title>dl_open_worker_begin (4,004,004 samples, 0.10%)</title><rect x="35.7" y="261" width="1.2" height="15.0" fill="rgb(233,129,31)" rx="2" ry="2" />
+<text  x="38.72" y="271.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,001,001 samples, 0.02%)</title><rect x="15.4" y="309" width="0.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="18.43" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="24.9" y="469" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.86" y="479.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="45.2" y="485" width="0.2" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="48.15" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (17,017,017 samples, 0.41%)</title><rect x="38.0" y="421" width="4.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="41.01" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="49.2" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="52.15" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (2,002,002 samples, 0.05%)</title><rect x="10.9" y="485" width="0.5" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="13.86" y="495.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (4,004,004 samples, 0.10%)</title><rect x="35.7" y="309" width="1.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="38.72" y="319.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="15.7" y="117" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="18.72" y="127.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="25.7" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="28.72" y="495.5" ></text>
+</g>
+<g >
+<title>py::iscode:/usr/lib/python3/dist-packages/numpy/_utils/_inspect.py (1,001,001 samples, 0.02%)</title><rect x="1187.7" y="517" width="0.3" height="15.0" fill="rgb(254,225,53)" rx="2" ry="2" />
+<text  x="1190.71" y="527.5" ></text>
+</g>
+<g >
+<title>_PyObject_CallFunction_SizeT (1,001,001 samples, 0.02%)</title><rect x="27.1" y="453" width="0.3" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="30.15" y="463.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="34.6" y="389" width="0.3" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="37.58" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.4" y="197" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="207.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (1,001,001 samples, 0.02%)</title><rect x="41.7" y="357" width="0.3" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="44.72" y="367.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportFrozenModule (1,001,001 samples, 0.02%)</title><rect x="15.4" y="357" width="0.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="18.43" y="367.5" ></text>
+</g>
+<g >
+<title>py::compile:/usr/lib/python3.12/re/_compiler.py (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="517" width="0.3" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="1188.71" y="527.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,001,001 samples, 0.02%)</title><rect x="16.3" y="325" width="0.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="19.29" y="335.5" ></text>
+</g>
+<g >
+<title>python3 (4,133,133,129 samples, 100.00%)</title><rect x="10.0" y="533" width="1180.0" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" >python3</text>
+</g>
+<g >
+<title>PyObject_GC_UnTrack (1,001,001 samples, 0.02%)</title><rect x="55.4" y="421" width="0.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="58.44" y="431.5" ></text>
+</g>
+<g >
+<title>py::_ModuleLock.release:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="30.9" y="517" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="33.86" y="527.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="44.9" y="453" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="47.87" y="463.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="18.0" y="501" width="0.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="21.00" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.4" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.43" y="495.5" ></text>
+</g>
+<g >
+<title>PyType_IsSubtype (1,001,001 samples, 0.02%)</title><rect x="54.3" y="309" width="0.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="57.30" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.3" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.29" y="415.5" ></text>
+</g>
+<g >
+<title>pyo3::pyclass_init::PyClassInitializer&lt;T&gt;::create_class_object (2,002,002 samples, 0.05%)</title><rect x="1184.0" y="245" width="0.6" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="1187.00" y="255.5" ></text>
+</g>
+<g >
+<title>py::_init_module_attrs:&lt;frozen importlib._bootstrap&gt; (3,003,003 samples, 0.07%)</title><rect x="45.7" y="517" width="0.9" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="48.72" y="527.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/pickle.py (1,001,001 samples, 0.02%)</title><rect x="20.3" y="517" width="0.3" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="23.29" y="527.5" ></text>
+</g>
+<g >
+<title>py::_LoaderBasics.exec_module:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="30.0" y="517" width="0.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="33.00" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="21.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.72" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="36.9" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="39.86" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="28.3" y="501" width="0.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="31.29" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="50.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="53.30" y="511.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="54.6" y="293" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="57.58" y="303.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="10.9" y="501" width="0.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="13.86" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="26.6" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="29.58" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_Free (1,001,001 samples, 0.02%)</title><rect x="17.4" y="277" width="0.3" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="20.43" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (5,005,005 samples, 0.12%)</title><rect x="41.2" y="389" width="1.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="44.15" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.6" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.58" y="463.5" ></text>
+</g>
+<g >
+<title>dl_open_worker (4,004,004 samples, 0.10%)</title><rect x="35.7" y="293" width="1.2" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="38.72" y="303.5" ></text>
+</g>
+<g >
+<title>PyList_Append (1,001,001 samples, 0.02%)</title><rect x="41.4" y="357" width="0.3" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="44.44" y="367.5" ></text>
+</g>
+<g >
+<title>PyThread_get_thread_ident (1,001,001 samples, 0.02%)</title><rect x="53.4" y="405" width="0.3" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="56.44" y="415.5" ></text>
+</g>
+<g >
+<title>py::_arraymethod:/usr/lib/python3/dist-packages/numpy/ma/core.py (1,001,001 samples, 0.02%)</title><rect x="32.3" y="517" width="0.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="35.29" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="335.5" ></text>
+</g>
+<g >
+<title>alloc::alloc::alloc_zeroed (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="181" width="2.3" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="1184.43" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="48.9" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="51.87" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.9" y="421" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.86" y="431.5" ></text>
+</g>
+<g >
+<title>ndarray::impl_constructors::&lt;impl ndarray::ArrayBase&lt;S,D&gt;&gt;::zeros (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="325" width="2.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="1184.43" y="335.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/pathlib.py (1,001,001 samples, 0.02%)</title><rect x="20.0" y="517" width="0.3" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="23.00" y="527.5" ></text>
+</g>
+<g >
+<title>_$LT$$u5b$usize$u3b$$u20$2$u5d$$u20$as$u20$ndarray..dimension..ndindex..NdIndex$LT$ndarray..dimension..dim..Dim$LT$$u5b$usize$u3b$$u20$2$u5d$$GT$$GT$$GT$::index_checked::h1d9704e0f4864144 (14,014,014 samples, 0.34%)</title><rect x="1177.4" y="309" width="4.0" height="15.0" fill="rgb(246,189,45)" rx="2" ry="2" />
+<text  x="1180.43" y="319.5" ></text>
+</g>
+<g >
+<title>py::_ModuleLock.acquire:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="30.6" y="517" width="0.3" height="15.0" fill="rgb(217,55,13)" rx="2" ry="2" />
+<text  x="33.58" y="527.5" ></text>
+</g>
+<g >
+<title>py::add_newdoc:/usr/lib/python3/dist-packages/numpy/core/function_base.py (1,001,001 samples, 0.02%)</title><rect x="49.4" y="517" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="52.44" y="527.5" ></text>
+</g>
+<g >
+<title>py::_WeakValueDictionary.__init__.&lt;locals&gt;.KeyedRef.__init__:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="31.1" y="517" width="0.3" height="15.0" fill="rgb(212,33,8)" rx="2" ry="2" />
+<text  x="34.15" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="44.3" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="47.29" y="479.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="32.9" y="277" width="0.2" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="35.86" y="287.5" ></text>
+</g>
+<g >
+<title>ffi_prep_cif (1,001,001 samples, 0.02%)</title><rect x="621.0" y="437" width="0.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="624.01" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.9" y="469" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.86" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_IS_GC (1,001,001 samples, 0.02%)</title><rect x="12.6" y="357" width="0.3" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="15.57" y="367.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="42.3" y="309" width="0.3" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="45.29" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="335.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="15.7" y="133" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="18.72" y="143.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline (6,006,006 samples, 0.15%)</title><rect x="51.7" y="421" width="1.7" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="54.72" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="15.4" y="373" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="383.5" ></text>
+</g>
+<g >
+<title>[unknown] (4,004,004 samples, 0.10%)</title><rect x="10.3" y="517" width="1.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.29" y="527.5" ></text>
+</g>
+<g >
+<title>std::thread::local::LocalKey&lt;T&gt;::try_with (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="213" width="0.5" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="1187.57" y="223.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (6,006,006 samples, 0.15%)</title><rect x="51.7" y="485" width="1.7" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="54.72" y="495.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (2,002,002 samples, 0.05%)</title><rect x="18.3" y="485" width="0.6" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="21.29" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="261" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="271.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (1,001,001 samples, 0.02%)</title><rect x="55.2" y="373" width="0.2" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="58.15" y="383.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="22.6" y="485" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="25.57" y="495.5" ></text>
+</g>
+<g >
+<title>std::thread::local::LocalKey&lt;T&gt;::with (1,001,001 samples, 0.02%)</title><rect x="621.3" y="405" width="0.3" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="624.29" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="15.4" y="389" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="399.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="405" width="0.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="1190.43" y="415.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::module_init (1,001,001 samples, 0.02%)</title><rect x="34.9" y="421" width="0.2" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="37.86" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="22.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="25.00" y="511.5" ></text>
+</g>
+<g >
+<title>PyErr_Occurred (1,001,001 samples, 0.02%)</title><rect x="19.4" y="357" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="22.43" y="367.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="421" width="563.5" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="624.58" y="431.5" >std::panicking::catch_unwind</text>
+</g>
+<g >
+<title>PyObject_SetAttr (1,001,001 samples, 0.02%)</title><rect x="44.0" y="469" width="0.3" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="47.01" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="33.4" y="437" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (6,006,006 samples, 0.15%)</title><rect x="35.1" y="437" width="1.8" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="38.15" y="447.5" ></text>
+</g>
+<g >
+<title>OBJ_NAME_do_all (1,001,001 samples, 0.02%)</title><rect x="32.9" y="357" width="0.2" height="15.0" fill="rgb(205,4,0)" rx="2" ry="2" />
+<text  x="35.86" y="367.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="453" width="0.3" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="1188.71" y="463.5" ></text>
+</g>
+<g >
+<title>[_hashlib.cpython-312-x86_64-linux-gnu.so] (2,002,002 samples, 0.05%)</title><rect x="32.9" y="437" width="0.5" height="15.0" fill="rgb(226,96,23)" rx="2" ry="2" />
+<text  x="35.86" y="447.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline_unraisable::_$u7b$$u7b$closure$u7d$$u7d$::h321ad1fce82a621e (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="373" width="0.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1190.43" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (4,004,004 samples, 0.10%)</title><rect x="41.4" y="373" width="1.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="44.44" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="149" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="159.5" ></text>
+</g>
+<g >
+<title>PyObject_CallOneArg (5,005,005 samples, 0.12%)</title><rect x="54.0" y="437" width="1.4" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="57.01" y="447.5" ></text>
+</g>
+<g >
+<title>_PyObject_LookupAttr (1,001,001 samples, 0.02%)</title><rect x="54.6" y="309" width="0.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="57.58" y="319.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="20.0" y="421" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="23.00" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1188.71" y="495.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (1,001,001 samples, 0.02%)</title><rect x="44.0" y="453" width="0.3" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="47.01" y="463.5" ></text>
+</g>
+<g >
+<title>numpy::array::PyArray&lt;T,D&gt;::from_owned_array_bound (3,003,003 samples, 0.07%)</title><rect x="1183.7" y="293" width="0.9" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="1186.71" y="303.5" ></text>
+</g>
+<g >
+<title>py::_find_spec:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="44.6" y="517" width="0.3" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="47.58" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="47.2" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="50.15" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.9" y="453" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.86" y="463.5" ></text>
+</g>
+<g >
+<title>alloc::vec::Vec&lt;T,A&gt;::split_off (1,001,001 samples, 0.02%)</title><rect x="621.3" y="357" width="0.3" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="624.29" y="367.5" ></text>
+</g>
+<g >
+<title>pyo3::conversion::FromPyPointer::from_owned_ptr (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="277" width="0.5" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1187.57" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="53.4" y="421" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="56.44" y="431.5" ></text>
+</g>
+<g >
+<title>numpy::array::PyArray&lt;T,D&gt;::from_raw_parts (3,003,003 samples, 0.07%)</title><rect x="1183.7" y="277" width="0.9" height="15.0" fill="rgb(224,87,20)" rx="2" ry="2" />
+<text  x="1186.71" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="31.4" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="34.43" y="447.5" ></text>
+</g>
+<g >
+<title>py::isdir:&lt;frozen genericpath&gt; (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="517" width="0.3" height="15.0" fill="rgb(237,150,36)" rx="2" ry="2" />
+<text  x="1191.00" y="527.5" ></text>
+</g>
+<g >
+<title>__GI___pthread_self (1,001,001 samples, 0.02%)</title><rect x="30.9" y="421" width="0.2" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="33.86" y="431.5" ></text>
+</g>
+<g >
+<title>_PyCode_New (1,001,001 samples, 0.02%)</title><rect x="42.6" y="389" width="0.3" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="45.58" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="12.3" y="357" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="15.29" y="367.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/ctypes/__init__.py (1,001,001 samples, 0.02%)</title><rect x="19.1" y="517" width="0.3" height="15.0" fill="rgb(227,105,25)" rx="2" ry="2" />
+<text  x="22.15" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="48.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="51.01" y="479.5" ></text>
+</g>
+<g >
+<title>__pthread_once_slow (1,001,001 samples, 0.02%)</title><rect x="33.1" y="293" width="0.3" height="15.0" fill="rgb(206,7,1)" rx="2" ry="2" />
+<text  x="36.15" y="303.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.7" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.72" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.1" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.15" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="53.7" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="56.72" y="415.5" ></text>
+</g>
+<g >
+<title>PyRun_StringFlags (2,002,002 samples, 0.05%)</title><rect x="1188.6" y="469" width="0.5" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="1191.57" y="479.5" ></text>
+</g>
+<g >
+<title>_PyAST_Compile (1,001,001 samples, 0.02%)</title><rect x="1188.9" y="453" width="0.2" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1191.86" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="45.2" y="453" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="48.15" y="463.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportFrozenModuleObject (1,001,001 samples, 0.02%)</title><rect x="15.4" y="341" width="0.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="18.43" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.6" y="261" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.57" y="271.5" ></text>
+</g>
+<g >
+<title>py::_add_docstring:/usr/lib/python3/dist-packages/numpy/core/function_base.py (1,001,001 samples, 0.02%)</title><rect x="32.0" y="517" width="0.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="35.01" y="527.5" ></text>
+</g>
+<g >
+<title>py::inner:&lt;timeit-src&gt; (3,003,003 samples, 0.07%)</title><rect x="1186.9" y="517" width="0.8" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="1189.86" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="48.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="51.58" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="28.6" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="31.58" y="495.5" ></text>
+</g>
+<g >
+<title>pyo3::types::module::PyModule::add_function (1,001,001 samples, 0.02%)</title><rect x="34.9" y="181" width="0.2" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="37.86" y="191.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind (6,006,006 samples, 0.15%)</title><rect x="51.7" y="389" width="1.7" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="54.72" y="399.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="23.7" y="485" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="26.72" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (10,010,010 samples, 0.24%)</title><rect x="34.0" y="453" width="2.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="37.01" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="28.0" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="31.00" y="479.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1,001,001 samples, 0.02%)</title><rect x="46.3" y="421" width="0.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="49.29" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="15.7" y="181" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="18.72" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="463.5" ></text>
+</g>
+<g >
+<title>strcmp (1,001,001 samples, 0.02%)</title><rect x="36.6" y="117" width="0.3" height="15.0" fill="rgb(217,58,13)" rx="2" ry="2" />
+<text  x="39.58" y="127.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="469" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1188.71" y="479.5" ></text>
+</g>
+<g >
+<title>__GI___strerror_l (1,001,001 samples, 0.02%)</title><rect x="47.7" y="453" width="0.3" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="50.72" y="463.5" ></text>
+</g>
+<g >
+<title>py::_type_check:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="48.6" y="517" width="0.3" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="51.58" y="527.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pyclass::lazy_type_object::LazyTypeObject&lt;T&gt;::get_or_init (1,001,001 samples, 0.02%)</title><rect x="1184.0" y="213" width="0.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="1187.00" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="33.4" y="341" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="351.5" ></text>
+</g>
+<g >
+<title>py::verify_matching_signatures:/usr/lib/python3/dist-packages/numpy/core/overrides.py (1,001,001 samples, 0.02%)</title><rect x="1189.7" y="517" width="0.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1192.71" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="85" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="95.5" ></text>
+</g>
+<g >
+<title>PyModule_ExecDef (4,004,004 samples, 0.10%)</title><rect x="32.9" y="453" width="1.1" height="15.0" fill="rgb(221,76,18)" rx="2" ry="2" />
+<text  x="35.86" y="463.5" ></text>
+</g>
+<g >
+<title>__opendir (1,001,001 samples, 0.02%)</title><rect x="25.7" y="469" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="28.72" y="479.5" ></text>
+</g>
+<g >
+<title>PyUnicode_FromFormatV (1,001,001 samples, 0.02%)</title><rect x="30.3" y="421" width="0.3" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="33.29" y="431.5" ></text>
+</g>
+<g >
+<title>py::_path_split.&lt;locals&gt;.&lt;genexpr&gt;:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="47.2" y="517" width="0.2" height="15.0" fill="rgb(239,158,37)" rx="2" ry="2" />
+<text  x="50.15" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="54.3" y="357" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="57.30" y="367.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="165" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="277" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="287.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_in_place&lt;pyo3::gil::GILPool&gt; (1,001,001 samples, 0.02%)</title><rect x="621.3" y="437" width="0.3" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="624.29" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::instance::Bound&lt;pyo3::types::module::PyModule&gt; as pyo3::types::module::PyModuleMethods&gt;::add::inner (1,001,001 samples, 0.02%)</title><rect x="34.9" y="133" width="0.2" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="37.86" y="143.5" ></text>
+</g>
+<g >
+<title>_Py_hashtable_get (2,002,002 samples, 0.05%)</title><rect x="38.9" y="389" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="41.86" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="27.1" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="30.15" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (21,021,021 samples, 0.51%)</title><rect x="37.4" y="469" width="6.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="40.44" y="479.5" ></text>
+</g>
+<g >
+<title>PyList_Append (1,001,001 samples, 0.02%)</title><rect x="38.3" y="405" width="0.3" height="15.0" fill="rgb(214,41,9)" rx="2" ry="2" />
+<text  x="41.29" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (8,008,008 samples, 0.19%)</title><rect x="15.4" y="405" width="2.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="415.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="43.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="46.44" y="511.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternFromString (1,001,001 samples, 0.02%)</title><rect x="16.6" y="293" width="0.3" height="15.0" fill="rgb(241,167,40)" rx="2" ry="2" />
+<text  x="19.57" y="303.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethod (1,001,001 samples, 0.02%)</title><rect x="15.7" y="357" width="0.3" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="18.72" y="367.5" ></text>
+</g>
+<g >
+<title>py::contextmanager:/usr/lib/python3.12/contextlib.py (1,001,001 samples, 0.02%)</title><rect x="1186.0" y="517" width="0.3" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="1189.00" y="527.5" ></text>
+</g>
+<g >
+<title>pyo3::marker::Python::from_owned_ptr (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="293" width="0.5" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="1187.57" y="303.5" ></text>
+</g>
+<g >
+<title>_Py_hashtable_get (3,003,003 samples, 0.07%)</title><rect x="40.3" y="373" width="0.9" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="43.29" y="383.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="1185.4" y="485" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1188.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="47.4" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="50.44" y="495.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="19.4" y="421" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="22.43" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="261" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="271.5" ></text>
+</g>
+<g >
+<title>PyObject_VectorcallDict (1,001,001 samples, 0.02%)</title><rect x="18.9" y="437" width="0.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="21.86" y="447.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1186.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1189.00" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="45.2" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="48.15" y="511.5" ></text>
+</g>
+<g >
+<title>PyTuple_New (1,001,001 samples, 0.02%)</title><rect x="41.2" y="373" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="44.15" y="383.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="165" width="2.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="1184.43" y="175.5" ></text>
+</g>
+<g >
+<title>PyUnicode_Concat (1,001,001 samples, 0.02%)</title><rect x="26.3" y="485" width="0.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="29.29" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::fastcall_with_keywords (1,974,974,973 samples, 47.78%)</title><rect x="621.3" y="469" width="563.8" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="624.29" y="479.5" >pyo3::impl_::trampoline::fastcall_with_keywords</text>
+</g>
+<g >
+<title>py::_guarded_repr_or_str:/usr/lib/python3/dist-packages/numpy/core/arrayprint.py (1,001,001 samples, 0.02%)</title><rect x="45.4" y="517" width="0.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="48.44" y="527.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::pyclass::tp_dealloc (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="469" width="0.3" height="15.0" fill="rgb(228,107,25)" rx="2" ry="2" />
+<text  x="1190.43" y="479.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="21.1" y="421" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="24.15" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="31.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="34.43" y="463.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="32.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="35.58" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="31.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="34.43" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1188.71" y="511.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="48.3" y="469" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="51.29" y="479.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="45.7" y="501" width="0.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="48.72" y="511.5" ></text>
+</g>
+<g >
+<title>alloc::vec::Vec&lt;T,A&gt;::with_capacity_in (1,001,001 samples, 0.02%)</title><rect x="621.3" y="341" width="0.3" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="624.29" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (5,005,005 samples, 0.12%)</title><rect x="11.4" y="389" width="1.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="14.43" y="399.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (2,002,002 samples, 0.05%)</title><rect x="32.9" y="389" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="35.86" y="399.5" ></text>
+</g>
+<g >
+<title>__strlen_avx2 (1,001,001 samples, 0.02%)</title><rect x="29.4" y="421" width="0.3" height="15.0" fill="rgb(246,188,45)" rx="2" ry="2" />
+<text  x="32.43" y="431.5" ></text>
+</g>
+<g >
+<title>_Py_HashBytes (1,001,001 samples, 0.02%)</title><rect x="20.6" y="421" width="0.3" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="23.57" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="22.0" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.00" y="495.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="469" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="30.9" y="485" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="33.86" y="495.5" ></text>
+</g>
+<g >
+<title>_dl_lookup_symbol_x (3,003,003 samples, 0.07%)</title><rect x="36.0" y="165" width="0.9" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="39.01" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="23.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="26.43" y="479.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,001,001 samples, 0.02%)</title><rect x="15.7" y="325" width="0.3" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="18.72" y="335.5" ></text>
+</g>
+<g >
+<title>PyErr_Occurred (1,001,001 samples, 0.02%)</title><rect x="14.3" y="357" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="17.29" y="367.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="22.3" y="501" width="0.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="25.29" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="165" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="175.5" ></text>
+</g>
+<g >
+<title>py::_path_split:&lt;frozen importlib._bootstrap_external&gt; (1,001,001 samples, 0.02%)</title><rect x="47.4" y="517" width="0.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="50.44" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1187.7" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1190.71" y="495.5" ></text>
+</g>
+<g >
+<title>core::iter::range::&lt;impl core::iter::traits::iterator::Iterator for core::ops::range::Range&lt;A&gt;&gt;::next (4,004,004 samples, 0.10%)</title><rect x="52.3" y="293" width="1.1" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="55.30" y="303.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="18.9" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="21.86" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="24.9" y="453" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.86" y="463.5" ></text>
+</g>
+<g >
+<title>py::_GenericAlias._make_substitution:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="29.7" y="517" width="0.3" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="32.72" y="527.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="25.4" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="28.43" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="19.4" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="22.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.0" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.00" y="447.5" ></text>
+</g>
+<g >
+<title>core::iter::range::&lt;impl core::iter::traits::iterator::Iterator for core::ops::range::Range&lt;A&gt;&gt;::next (810,810,810 samples, 19.62%)</title><rect x="945.9" y="325" width="231.5" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="948.94" y="335.5" >core::iter::range::&lt;impl core:..</text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.3" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.29" y="447.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline (1,001,001 samples, 0.02%)</title><rect x="34.9" y="405" width="0.2" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="37.86" y="415.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="44.9" y="421" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="47.87" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="28.9" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="31.86" y="511.5" ></text>
+</g>
+<g >
+<title>_dlerror_run (1,001,001 samples, 0.02%)</title><rect x="23.7" y="405" width="0.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="26.72" y="415.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="47.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="50.72" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="10.0" y="501" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.00" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="20.9" y="485" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="23.86" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.6" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.57" y="463.5" ></text>
+</g>
+<g >
+<title>core::cell::Cell&lt;T&gt;::get (1,001,001 samples, 0.02%)</title><rect x="1184.9" y="149" width="0.2" height="15.0" fill="rgb(254,226,54)" rx="2" ry="2" />
+<text  x="1187.86" y="159.5" ></text>
+</g>
+<g >
+<title>dlopen_implementation (1,001,001 samples, 0.02%)</title><rect x="23.7" y="421" width="0.3" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="26.72" y="431.5" ></text>
+</g>
+<g >
+<title>py::_binary_method:/usr/lib/python3/dist-packages/numpy/lib/mixins.py (1,001,001 samples, 0.02%)</title><rect x="32.6" y="517" width="0.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="35.58" y="527.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="16.6" y="277" width="0.3" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="19.57" y="287.5" ></text>
+</g>
+<g >
+<title>py::FileLoader.get_data:&lt;frozen importlib._bootstrap_external&gt; (2,002,002 samples, 0.05%)</title><rect x="26.9" y="517" width="0.5" height="15.0" fill="rgb(211,28,6)" rx="2" ry="2" />
+<text  x="29.86" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="46.3" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="49.29" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="40.0" y="357" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="43.01" y="367.5" ></text>
+</g>
+<g >
+<title>EVP_MD_do_all_provided (2,002,002 samples, 0.05%)</title><rect x="32.9" y="421" width="0.5" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="35.86" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.0" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.00" y="463.5" ></text>
+</g>
+<g >
+<title>py::_WeakValueDictionary.setdefault:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="31.7" y="517" width="0.3" height="15.0" fill="rgb(232,126,30)" rx="2" ry="2" />
+<text  x="34.72" y="527.5" ></text>
+</g>
+<g >
+<title>PyObject_Malloc (1,001,001 samples, 0.02%)</title><rect x="50.3" y="453" width="0.3" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="53.30" y="463.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="405" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="415.5" ></text>
+</g>
+<g >
+<title>alloc::vec::from_elem (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="293" width="2.3" height="15.0" fill="rgb(245,184,44)" rx="2" ry="2" />
+<text  x="1184.43" y="303.5" ></text>
+</g>
+<g >
+<title>std::panic::catch_unwind (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="437" width="563.5" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="624.58" y="447.5" >std::panic::catch_unwind</text>
+</g>
+<g >
+<title>_dl_open (4,004,004 samples, 0.10%)</title><rect x="35.7" y="325" width="1.2" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="38.72" y="335.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1187.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1190.71" y="511.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::&lt;impl pyo3_lib::matmul_relu_pyo3::MakeDef&gt;::_PYO3_DEF::trampoline (1,974,974,973 samples, 47.78%)</title><rect x="621.3" y="485" width="563.8" height="15.0" fill="rgb(250,207,49)" rx="2" ry="2" />
+<text  x="624.29" y="495.5" >pyo3_lib::&lt;impl pyo3_lib::matmul_relu_pyo3::MakeDef&gt;::_PYO3_DEF::trampoline</text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="55.2" y="389" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="58.15" y="399.5" ></text>
+</g>
+<g >
+<title>Py_RunMain (14,014,014 samples, 0.34%)</title><rect x="11.4" y="453" width="4.0" height="15.0" fill="rgb(242,172,41)" rx="2" ry="2" />
+<text  x="14.43" y="463.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="44.9" y="469" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="47.87" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="24.9" y="437" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.86" y="447.5" ></text>
+</g>
+<g >
+<title>PyUnicode_FromKindAndData (1,001,001 samples, 0.02%)</title><rect x="39.7" y="389" width="0.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="42.72" y="399.5" ></text>
+</g>
+<g >
+<title>py::_fr0:/usr/lib/python3/dist-packages/numpy/core/getlimits.py (1,001,001 samples, 0.02%)</title><rect x="44.9" y="517" width="0.3" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="47.87" y="527.5" ></text>
+</g>
+<g >
+<title>_PyObject_Call_Prepend (1,001,001 samples, 0.02%)</title><rect x="45.2" y="437" width="0.2" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="48.15" y="447.5" ></text>
+</g>
+<g >
+<title>PyType_GenericAlloc (1,001,001 samples, 0.02%)</title><rect x="18.6" y="421" width="0.3" height="15.0" fill="rgb(251,211,50)" rx="2" ry="2" />
+<text  x="21.57" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="149" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="159.5" ></text>
+</g>
+<g >
+<title>OPENSSL_init_crypto (1,001,001 samples, 0.02%)</title><rect x="33.1" y="325" width="0.3" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="36.15" y="335.5" ></text>
+</g>
+<g >
+<title>OPENSSL_cleanup (1,001,001 samples, 0.02%)</title><rect x="17.7" y="437" width="0.3" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="20.72" y="447.5" ></text>
+</g>
+<g >
+<title>_PyDict_GetItemStringWithError (1,001,001 samples, 0.02%)</title><rect x="20.6" y="453" width="0.3" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="23.57" y="463.5" ></text>
+</g>
+<g >
+<title>py::_MaskedUFunc.__init__:/usr/lib/python3/dist-packages/numpy/ma/core.py (1,001,001 samples, 0.02%)</title><rect x="30.3" y="517" width="0.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="33.29" y="527.5" ></text>
+</g>
+<g >
+<title>_dl_relocate_object (3,003,003 samples, 0.07%)</title><rect x="36.0" y="229" width="0.9" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="39.01" y="239.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="25.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="28.72" y="511.5" ></text>
+</g>
+<g >
+<title>ndarray::dimension::stride_offset (14,014,014 samples, 0.34%)</title><rect x="1177.4" y="277" width="4.0" height="15.0" fill="rgb(211,30,7)" rx="2" ry="2" />
+<text  x="1180.43" y="287.5" ></text>
+</g>
+<g >
+<title>PyDict_SetItem (1,001,001 samples, 0.02%)</title><rect x="18.9" y="357" width="0.2" height="15.0" fill="rgb(229,112,26)" rx="2" ry="2" />
+<text  x="21.86" y="367.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.9" y="437" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.86" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1187.1" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1190.14" y="479.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline_unraisable (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="437" width="0.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="1190.43" y="447.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (4,004,004 samples, 0.10%)</title><rect x="35.7" y="277" width="1.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="38.72" y="287.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="48.9" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="51.87" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="47.7" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="50.72" y="495.5" ></text>
+</g>
+<g >
+<title>___dlopen (1,001,001 samples, 0.02%)</title><rect x="23.7" y="437" width="0.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="26.72" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="26.3" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="29.29" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="16.9" y="293" width="0.2" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="19.86" y="303.5" ></text>
+</g>
+<g >
+<title>_dl_open_relocate_one_object (3,003,003 samples, 0.07%)</title><rect x="36.0" y="245" width="0.9" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="39.01" y="255.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="1185.7" y="437" width="0.3" height="15.0" fill="rgb(212,34,8)" rx="2" ry="2" />
+<text  x="1188.71" y="447.5" ></text>
+</g>
+<g >
+<title>elf_dynamic_do_Rela (3,003,003 samples, 0.07%)</title><rect x="36.0" y="213" width="0.9" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="39.01" y="223.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="28.0" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="31.00" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.4" y="373" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.43" y="383.5" ></text>
+</g>
+<g >
+<title>_PyObject_RealIsInstance (2,002,002 samples, 0.05%)</title><rect x="54.3" y="325" width="0.6" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="57.30" y="335.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="30.3" y="453" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="33.29" y="463.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="12.6" y="341" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="15.57" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="18.6" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="21.57" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.6" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.58" y="479.5" ></text>
+</g>
+<g >
+<title>py::array_function_dispatch:/usr/lib/python3/dist-packages/numpy/core/overrides.py (1,001,001 samples, 0.02%)</title><rect x="50.3" y="517" width="0.3" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="53.30" y="527.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/tokenize.py (1,001,001 samples, 0.02%)</title><rect x="20.9" y="517" width="0.2" height="15.0" fill="rgb(252,219,52)" rx="2" ry="2" />
+<text  x="23.86" y="527.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::fastcall_with_keywords::_$u7b$$u7b$closure$u7d$$u7d$::h3fdd66324f8d6de1 (6,006,006 samples, 0.15%)</title><rect x="51.7" y="341" width="1.7" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="54.72" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.4" y="389" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.43" y="399.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="30.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="33.00" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.6" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.58" y="415.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.4" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="335.5" ></text>
+</g>
+<g >
+<title>_dl_map_object_deps (1,001,001 samples, 0.02%)</title><rect x="35.7" y="245" width="0.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="38.72" y="255.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVec&lt;T,A&gt;::with_capacity_zeroed_in (8,008,008 samples, 0.19%)</title><rect x="1181.4" y="261" width="2.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="1184.43" y="271.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="30.9" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="33.86" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,001,001 samples, 0.02%)</title><rect x="15.7" y="309" width="0.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="18.72" y="319.5" ></text>
+</g>
+<g >
+<title>alloc::alloc::alloc (1,001,001 samples, 0.02%)</title><rect x="621.3" y="245" width="0.3" height="15.0" fill="rgb(229,111,26)" rx="2" ry="2" />
+<text  x="624.29" y="255.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="48.0" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="51.01" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="46.3" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="49.29" y="495.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::__pyfunction_matmul_relu_pyo3 (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="357" width="563.5" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="624.58" y="367.5" >pyo3_lib::__pyfunction_matmul_relu_pyo3</text>
+</g>
+<g >
+<title>PyObject_RichCompareBool (1,001,001 samples, 0.02%)</title><rect x="48.6" y="469" width="0.3" height="15.0" fill="rgb(211,29,7)" rx="2" ry="2" />
+<text  x="51.58" y="479.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (2,002,002 samples, 0.05%)</title><rect x="10.9" y="421" width="0.5" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="13.86" y="431.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="33.1" y="229" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="36.15" y="239.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind::do_call (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="389" width="0.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1190.43" y="399.5" ></text>
+</g>
+<g >
+<title>check_match (2,002,002 samples, 0.05%)</title><rect x="36.3" y="133" width="0.6" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="39.29" y="143.5" ></text>
+</g>
+<g >
+<title>all (4,133,133,129 samples, 100%)</title><rect x="10.0" y="549" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="559.5" ></text>
+</g>
+<g >
+<title>py::EnumType.__new__:/usr/lib/python3.12/enum.py (3,003,003 samples, 0.07%)</title><rect x="24.6" y="517" width="0.8" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="27.57" y="527.5" ></text>
+</g>
+<g >
+<title>Py_InitializeFromConfig (8,008,008 samples, 0.19%)</title><rect x="15.4" y="421" width="2.3" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="18.43" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="27.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="30.43" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3::instance::Bound&lt;T&gt;::into_gil_ref (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="309" width="0.5" height="15.0" fill="rgb(245,185,44)" rx="2" ry="2" />
+<text  x="1187.57" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (3,003,003 samples, 0.07%)</title><rect x="43.7" y="485" width="0.9" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="46.72" y="495.5" ></text>
+</g>
+<g >
+<title>py::extend_all:/usr/lib/python3/dist-packages/numpy/core/numeric.py (1,001,001 samples, 0.02%)</title><rect x="1186.3" y="517" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1189.28" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1189.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1192.43" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.0" y="373" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.00" y="383.5" ></text>
+</g>
+<g >
+<title>py::DistutilsMetaFinder.find_spec:/usr/lib/python3/dist-packages/_distutils_hack/__init__.py (2,002,002 samples, 0.05%)</title><rect x="24.0" y="517" width="0.6" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="27.00" y="527.5" ></text>
+</g>
+<g >
+<title>PyObject_CallFunction (1,001,001 samples, 0.02%)</title><rect x="17.1" y="277" width="0.3" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="20.14" y="287.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="34.6" y="373" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="37.58" y="383.5" ></text>
+</g>
+<g >
+<title>_dl_catch_error (4,004,004 samples, 0.10%)</title><rect x="35.7" y="373" width="1.2" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="38.72" y="383.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="29.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="32.72" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1186.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1189.57" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="49.2" y="485" width="0.2" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="52.15" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="293" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="303.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="181" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="191.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="46.6" y="501" width="0.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="49.58" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.0" y="389" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.00" y="399.5" ></text>
+</g>
+<g >
+<title>OBJ_NAME_cleanup (1,001,001 samples, 0.02%)</title><rect x="17.7" y="405" width="0.3" height="15.0" fill="rgb(248,199,47)" rx="2" ry="2" />
+<text  x="20.72" y="415.5" ></text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::trampoline (1,974,974,973 samples, 47.78%)</title><rect x="621.3" y="453" width="563.8" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="624.29" y="463.5" >pyo3::impl_::trampoline::trampoline</text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (4,004,004 samples, 0.10%)</title><rect x="35.7" y="357" width="1.2" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="38.72" y="367.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="16.9" y="309" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="19.86" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="26.6" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="29.58" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="12.0" y="373" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="15.00" y="383.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="48.3" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="51.29" y="495.5" ></text>
+</g>
+<g >
+<title>PyObject_GC_UnTrack (1,001,001 samples, 0.02%)</title><rect x="31.4" y="421" width="0.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="34.43" y="431.5" ></text>
+</g>
+<g >
+<title>py::_WeakValueDictionary.__init__.&lt;locals&gt;.KeyedRef.remove:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="31.4" y="517" width="0.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="34.43" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="22.9" y="437" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.86" y="447.5" ></text>
+</g>
+<g >
+<title>_dl_load_cache_lookup (1,001,001 samples, 0.02%)</title><rect x="35.7" y="181" width="0.3" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="38.72" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="33.4" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="335.5" ></text>
+</g>
+<g >
+<title>py::_get_module_lock:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="45.2" y="517" width="0.2" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="48.15" y="527.5" ></text>
+</g>
+<g >
+<title>PyDict_SetDefault (1,001,001 samples, 0.02%)</title><rect x="41.7" y="341" width="0.3" height="15.0" fill="rgb(226,101,24)" rx="2" ry="2" />
+<text  x="44.72" y="351.5" ></text>
+</g>
+<g >
+<title>core::ops::function::FnOnce::call_once (1,001,001 samples, 0.02%)</title><rect x="34.9" y="309" width="0.2" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="37.86" y="319.5" ></text>
+</g>
+<g >
+<title>pyo3::conversion::FromPyPointer::from_owned_ptr_or_panic (2,002,002 samples, 0.05%)</title><rect x="1184.6" y="261" width="0.5" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="1187.57" y="271.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="55.2" y="341" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="58.15" y="351.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::matmul_relu_pyo3 (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="341" width="563.5" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="624.58" y="351.5" >pyo3_lib::matmul_relu_pyo3</text>
+</g>
+<g >
+<title>_PyDict_GetItemStringWithError (1,001,001 samples, 0.02%)</title><rect x="20.3" y="453" width="0.3" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="23.29" y="463.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="31.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="34.72" y="511.5" ></text>
+</g>
+<g >
+<title>std::panic::catch_unwind (6,006,006 samples, 0.15%)</title><rect x="51.7" y="405" width="1.7" height="15.0" fill="rgb(237,149,35)" rx="2" ry="2" />
+<text  x="54.72" y="415.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModule (1,001,001 samples, 0.02%)</title><rect x="17.1" y="309" width="0.3" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="20.14" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="34.9" y="37" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="37.86" y="47.5" ></text>
+</g>
+<g >
+<title>[python3.12] (5,005,005 samples, 0.12%)</title><rect x="54.0" y="421" width="1.4" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="57.01" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="24.3" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="27.29" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="21.1" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="24.15" y="495.5" ></text>
+</g>
+<g >
+<title>py::cleandoc:/usr/lib/python3.12/inspect.py (1,001,001 samples, 0.02%)</title><rect x="1185.4" y="517" width="0.3" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="1188.43" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="69" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="79.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="20.6" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="23.57" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="15.7" y="261" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="18.72" y="271.5" ></text>
+</g>
+<g >
+<title>_PyType_Lookup (1,001,001 samples, 0.02%)</title><rect x="28.0" y="437" width="0.3" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="31.00" y="447.5" ></text>
+</g>
+<g >
+<title>PyObject_Malloc (1,001,001 samples, 0.02%)</title><rect x="49.4" y="469" width="0.3" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="52.44" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Malloc (1,001,001 samples, 0.02%)</title><rect x="39.7" y="373" width="0.3" height="15.0" fill="rgb(206,4,1)" rx="2" ry="2" />
+<text  x="42.72" y="383.5" ></text>
+</g>
+<g >
+<title>py::_load_unlocked:&lt;frozen importlib._bootstrap&gt; (2,002,002 samples, 0.05%)</title><rect x="46.6" y="517" width="0.6" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="49.58" y="527.5" ></text>
+</g>
+<g >
+<title>numpy::array::PyArray&lt;T,D&gt;::new_with_data (1,001,001 samples, 0.02%)</title><rect x="1183.7" y="261" width="0.3" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="1186.71" y="271.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::instance::Bound&lt;pyo3::types::any::PyAny&gt; as pyo3::types::any::PyAnyMethods&gt;::setattr (1,001,001 samples, 0.02%)</title><rect x="34.9" y="117" width="0.2" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="37.86" y="127.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="23.7" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="26.72" y="479.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="17.7" y="309" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="20.72" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="197" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="207.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::pyo3_lib (1,001,001 samples, 0.02%)</title><rect x="34.9" y="197" width="0.2" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="37.86" y="207.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.9" y="405" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.86" y="415.5" ></text>
+</g>
+<g >
+<title>__GI___open64_nocancel (1,001,001 samples, 0.02%)</title><rect x="25.7" y="453" width="0.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="28.72" y="463.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,001,001 samples, 0.02%)</title><rect x="15.7" y="213" width="0.3" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="18.72" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="22.9" y="453" width="0.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.86" y="463.5" ></text>
+</g>
+<g >
+<title>pyo3_lib::pyo3_lib::__pyo3_init::_$u7b$$u7b$closure$u7d$$u7d$::hb4ec0d0af2cf2cf6 (1,001,001 samples, 0.02%)</title><rect x="34.9" y="293" width="0.2" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="37.86" y="303.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="20.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="23.29" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="15.7" y="341" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="18.72" y="351.5" ></text>
+</g>
+<g >
+<title>[python3.12] (5,005,005 samples, 0.12%)</title><rect x="11.4" y="405" width="1.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="14.43" y="415.5" ></text>
+</g>
+<g >
+<title>_PyDict_GetItem_KnownHash (1,001,001 samples, 0.02%)</title><rect x="33.4" y="309" width="0.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="36.43" y="319.5" ></text>
+</g>
+<g >
+<title>PyDescr_NewMember (1,001,001 samples, 0.02%)</title><rect x="16.6" y="309" width="0.3" height="15.0" fill="rgb(239,160,38)" rx="2" ry="2" />
+<text  x="19.57" y="319.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="1189.1" y="485" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="1192.14" y="495.5" ></text>
+</g>
+<g >
+<title>py::_tp_cache.&lt;locals&gt;.decorator:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="48.3" y="517" width="0.3" height="15.0" fill="rgb(239,159,38)" rx="2" ry="2" />
+<text  x="51.29" y="527.5" ></text>
+</g>
+<g >
+<title>PyInit_pyo3_lib (1,001,001 samples, 0.02%)</title><rect x="34.9" y="437" width="0.2" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="37.86" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (2,002,002 samples, 0.05%)</title><rect x="35.1" y="421" width="0.6" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="38.15" y="431.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="27.4" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="30.43" y="495.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (4,004,004 samples, 0.10%)</title><rect x="40.0" y="389" width="1.2" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="43.01" y="399.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="24.0" y="501" width="0.6" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="27.00" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (2,002,002 samples, 0.05%)</title><rect x="26.9" y="501" width="0.5" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="29.86" y="511.5" ></text>
+</g>
+<g >
+<title>PyFile_OpenCodeObject (1,001,001 samples, 0.02%)</title><rect x="27.1" y="469" width="0.3" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="30.15" y="479.5" ></text>
+</g>
+<g >
+<title>PyFunction_New (1,001,001 samples, 0.02%)</title><rect x="21.7" y="485" width="0.3" height="15.0" fill="rgb(212,36,8)" rx="2" ry="2" />
+<text  x="24.72" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.7" y="229" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.72" y="239.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1185.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1188.43" y="479.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (1,001,001 samples, 0.02%)</title><rect x="17.7" y="421" width="0.3" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="20.72" y="431.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.4" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.43" y="415.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="29.4" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="32.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="19.4" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="22.43" y="479.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3/dist-packages/numpy/core/numerictypes.py (1,001,001 samples, 0.02%)</title><rect x="21.7" y="517" width="0.3" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="24.72" y="527.5" ></text>
+</g>
+<g >
+<title>[_ctypes.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="23.7" y="453" width="0.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="26.72" y="463.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,001,001 samples, 0.02%)</title><rect x="16.9" y="245" width="0.2" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="19.86" y="255.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (1,001,001 samples, 0.02%)</title><rect x="34.6" y="405" width="0.3" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="37.58" y="415.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="23.7" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="26.72" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,001,001 samples, 0.02%)</title><rect x="1188.3" y="485" width="0.3" height="15.0" fill="rgb(216,52,12)" rx="2" ry="2" />
+<text  x="1191.29" y="495.5" ></text>
+</g>
+<g >
+<title>CONF_modules_load_file_ex (1,001,001 samples, 0.02%)</title><rect x="33.1" y="245" width="0.3" height="15.0" fill="rgb(241,167,39)" rx="2" ry="2" />
+<text  x="36.15" y="255.5" ></text>
+</g>
+<g >
+<title>__GI__dl_catch_exception (1,001,001 samples, 0.02%)</title><rect x="23.7" y="325" width="0.3" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="26.72" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (14,014,014 samples, 0.34%)</title><rect x="32.9" y="485" width="4.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="35.86" y="495.5" ></text>
+</g>
+<g >
+<title>std::sys::thread_local::native::eager::Storage&lt;T&gt;::get (1,001,001 samples, 0.02%)</title><rect x="1184.9" y="165" width="0.2" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="1187.86" y="175.5" ></text>
+</g>
+<g >
+<title>py::_proto_member.__set_name__:/usr/lib/python3.12/enum.py (1,001,001 samples, 0.02%)</title><rect x="48.0" y="517" width="0.3" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="51.01" y="527.5" ></text>
+</g>
+<g >
+<title>_PyDict_GetItem_KnownHash (1,001,001 samples, 0.02%)</title><rect x="25.1" y="405" width="0.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="28.15" y="415.5" ></text>
+</g>
+<g >
+<title>PyMem_Malloc (1,001,001 samples, 0.02%)</title><rect x="16.3" y="245" width="0.3" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="19.29" y="255.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="1183.7" y="245" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="1186.71" y="255.5" ></text>
+</g>
+<g >
+<title>matmul_relu_c (1,979,979,978 samples, 47.91%)</title><rect x="55.7" y="389" width="565.3" height="15.0" fill="rgb(216,53,12)" rx="2" ry="2" />
+<text  x="58.73" y="399.5" >matmul_relu_c</text>
+</g>
+<g >
+<title>pyo3::impl_::trampoline::dealloc::_$u7b$$u7b$closure$u7d$$u7d$::hb1ed85d942cda63b (1,001,001 samples, 0.02%)</title><rect x="1187.4" y="357" width="0.3" height="15.0" fill="rgb(235,141,33)" rx="2" ry="2" />
+<text  x="1190.43" y="367.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,001,001 samples, 0.02%)</title><rect x="17.4" y="341" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="20.43" y="351.5" ></text>
+</g>
+<g >
+<title>dlopen_doit (1,001,001 samples, 0.02%)</title><rect x="23.7" y="357" width="0.3" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="26.72" y="367.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="421" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="431.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,003,003 samples, 0.07%)</title><rect x="43.7" y="501" width="0.9" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="46.72" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="25.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="28.43" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.0" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.00" y="495.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="20.9" y="501" width="0.2" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="23.86" y="511.5" ></text>
+</g>
+<g >
+<title>PyUnicode_FromKindAndData (1,001,001 samples, 0.02%)</title><rect x="38.6" y="405" width="0.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="41.58" y="415.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,001,001 samples, 0.02%)</title><rect x="20.6" y="485" width="0.3" height="15.0" fill="rgb(205,3,0)" rx="2" ry="2" />
+<text  x="23.57" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="43.4" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="46.44" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="16.9" y="213" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="19.86" y="223.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="34.3" y="421" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="37.29" y="431.5" ></text>
+</g>
+<g >
+<title>OBJ_NAME_remove (1,001,001 samples, 0.02%)</title><rect x="17.7" y="373" width="0.3" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="20.72" y="383.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1,001,001 samples, 0.02%)</title><rect x="36.9" y="453" width="0.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="39.86" y="463.5" ></text>
+</g>
+<g >
+<title>__libc_start_call_main (23,023,023 samples, 0.56%)</title><rect x="11.4" y="485" width="6.6" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="14.43" y="495.5" ></text>
+</g>
+<g >
+<title>PyInit__multiarray_umath (1,001,001 samples, 0.02%)</title><rect x="34.3" y="437" width="0.3" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="37.29" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="22.6" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="25.57" y="463.5" ></text>
+</g>
+<g >
+<title>PyUnicode_InternInPlace (1,001,001 samples, 0.02%)</title><rect x="42.3" y="325" width="0.3" height="15.0" fill="rgb(212,33,7)" rx="2" ry="2" />
+<text  x="45.29" y="335.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="45.4" y="389" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="48.44" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.4" y="309" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.43" y="319.5" ></text>
+</g>
+<g >
+<title>py::_compile:/usr/lib/python3.12/re/_compiler.py (1,001,001 samples, 0.02%)</title><rect x="37.1" y="517" width="0.3" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="40.15" y="527.5" ></text>
+</g>
+<g >
+<title>[_multiarray_umath.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="34.3" y="405" width="0.3" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="37.29" y="415.5" ></text>
+</g>
+<g >
+<title>pyo3::types::module::PyModule::add (1,001,001 samples, 0.02%)</title><rect x="34.9" y="165" width="0.2" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="37.86" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="30.9" y="469" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="33.86" y="479.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="15.7" y="197" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="18.72" y="207.5" ></text>
+</g>
+<g >
+<title>[_ctypes.cpython-312-x86_64-linux-gnu.so] (1,001,001 samples, 0.02%)</title><rect x="55.4" y="437" width="0.3" height="15.0" fill="rgb(208,17,4)" rx="2" ry="2" />
+<text  x="58.44" y="447.5" ></text>
+</g>
+<g >
+<title>openaux (1,001,001 samples, 0.02%)</title><rect x="35.7" y="213" width="0.3" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="38.72" y="223.5" ></text>
+</g>
+<g >
+<title>resolve_map (3,003,003 samples, 0.07%)</title><rect x="36.0" y="181" width="0.9" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="39.01" y="191.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="293" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="303.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,001,001 samples, 0.02%)</title><rect x="1188.3" y="469" width="0.3" height="15.0" fill="rgb(206,6,1)" rx="2" ry="2" />
+<text  x="1191.29" y="479.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,988,988,987 samples, 48.12%)</title><rect x="53.4" y="485" width="567.9" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="56.44" y="495.5" >_PyObject_MakeTpCall</text>
+</g>
+<g >
+<title>_PyDict_GetItem_KnownHash (1,001,001 samples, 0.02%)</title><rect x="21.1" y="357" width="0.3" height="15.0" fill="rgb(231,123,29)" rx="2" ry="2" />
+<text  x="24.15" y="367.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="30.6" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="33.58" y="511.5" ></text>
+</g>
+<g >
+<title>_PyObject_GC_New (1,001,001 samples, 0.02%)</title><rect x="50.3" y="469" width="0.3" height="15.0" fill="rgb(238,152,36)" rx="2" ry="2" />
+<text  x="53.30" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="31.4" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="34.43" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="25.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="28.43" y="463.5" ></text>
+</g>
+<g >
+<title>_dl_catch_error (1,001,001 samples, 0.02%)</title><rect x="23.7" y="389" width="0.3" height="15.0" fill="rgb(223,83,20)" rx="2" ry="2" />
+<text  x="26.72" y="399.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="27.1" y="437" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="30.15" y="447.5" ></text>
+</g>
+<g >
+<title>__memset_avx2_unaligned_erms (1,001,001 samples, 0.02%)</title><rect x="48.9" y="453" width="0.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="51.87" y="463.5" ></text>
+</g>
+<g >
+<title>py::namedtuple:/usr/lib/python3.12/collections/__init__.py (4,004,004 samples, 0.10%)</title><rect x="1188.3" y="517" width="1.1" height="15.0" fill="rgb(217,59,14)" rx="2" ry="2" />
+<text  x="1191.29" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;core::ops::range::Range&lt;T&gt; as core::iter::range::RangeIteratorImpl&gt;::spec_next (810,810,810 samples, 19.62%)</title><rect x="945.9" y="309" width="231.5" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="948.94" y="319.5" >&lt;core::ops::range::Range&lt;T&gt; as..</text>
+</g>
+<g >
+<title>__GI_exit (1,001,001 samples, 0.02%)</title><rect x="17.7" y="469" width="0.3" height="15.0" fill="rgb(236,147,35)" rx="2" ry="2" />
+<text  x="20.72" y="479.5" ></text>
+</g>
+<g >
+<title>PyObject_Call (2,002,002 samples, 0.05%)</title><rect x="22.9" y="485" width="0.5" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="25.86" y="495.5" ></text>
+</g>
+<g >
+<title>py::&lt;lambda&gt;:&lt;string&gt; (3,003,003 samples, 0.07%)</title><rect x="18.0" y="517" width="0.9" height="15.0" fill="rgb(241,166,39)" rx="2" ry="2" />
+<text  x="21.00" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;pyo3::pyclass_init::PyNativeTypeInitializer&lt;T&gt; as pyo3::pyclass_init::PyObjectInit&lt;T&gt;&gt;::into_new_object (1,001,001 samples, 0.02%)</title><rect x="1184.3" y="213" width="0.3" height="15.0" fill="rgb(253,224,53)" rx="2" ry="2" />
+<text  x="1187.28" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="33.4" y="357" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="36.43" y="367.5" ></text>
+</g>
+<g >
+<title>[libcrypto.so.3] (2,002,002 samples, 0.05%)</title><rect x="32.9" y="373" width="0.5" height="15.0" fill="rgb(234,136,32)" rx="2" ry="2" />
+<text  x="35.86" y="383.5" ></text>
+</g>
+<g >
+<title>strlen (1,001,001 samples, 0.02%)</title><rect x="35.7" y="149" width="0.3" height="15.0" fill="rgb(224,88,21)" rx="2" ry="2" />
+<text  x="38.72" y="159.5" ></text>
+</g>
+<g >
+<title>__tls_get_addr (1,001,001 samples, 0.02%)</title><rect x="1184.6" y="165" width="0.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="1187.57" y="175.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="357" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="367.5" ></text>
+</g>
+<g >
+<title>PyUnicode_Substring (1,001,001 samples, 0.02%)</title><rect x="49.4" y="485" width="0.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="52.44" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="373" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="383.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="15.4" y="245" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="18.43" y="255.5" ></text>
+</g>
+<g >
+<title>py::&lt;module&gt;:/usr/lib/python3.12/ipaddress.py (1,001,001 samples, 0.02%)</title><rect x="19.4" y="517" width="0.3" height="15.0" fill="rgb(247,193,46)" rx="2" ry="2" />
+<text  x="22.43" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="21.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="24.43" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="469" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="479.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind::do_call (1,973,973,972 samples, 47.76%)</title><rect x="621.6" y="405" width="563.5" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="624.58" y="415.5" >std::panicking::catch_unwind::do_call</text>
+</g>
+<g >
+<title>py::_find_and_load:&lt;frozen importlib._bootstrap&gt; (1,001,001 samples, 0.02%)</title><rect x="43.4" y="517" width="0.3" height="15.0" fill="rgb(246,192,45)" rx="2" ry="2" />
+<text  x="46.44" y="527.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="27.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="30.43" y="511.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="1186.3" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="1189.28" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="21.1" y="405" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="24.15" y="415.5" ></text>
+</g>
+<g >
+<title>_PyObject_LookupSpecial (1,001,001 samples, 0.02%)</title><rect x="49.7" y="485" width="0.3" height="15.0" fill="rgb(218,61,14)" rx="2" ry="2" />
+<text  x="52.72" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="261" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="271.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="45.4" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="48.44" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.12] (9,009,009 samples, 0.22%)</title><rect x="12.9" y="405" width="2.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="15.86" y="415.5" ></text>
+</g>
+<g >
+<title>PyObject_CallFunction (1,001,001 samples, 0.02%)</title><rect x="33.4" y="389" width="0.3" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="36.43" y="399.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,001,001 samples, 0.02%)</title><rect x="17.1" y="213" width="0.3" height="15.0" fill="rgb(250,208,49)" rx="2" ry="2" />
+<text  x="20.14" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="29.4" y="453" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="32.43" y="463.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,001,001 samples, 0.02%)</title><rect x="32.0" y="485" width="0.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="35.01" y="495.5" ></text>
+</g>
+<g >
+<title>py::_typevar_subst:/usr/lib/python3.12/typing.py (1,001,001 samples, 0.02%)</title><rect x="48.9" y="517" width="0.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="51.87" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.1" y="149" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.14" y="159.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="17.4" y="325" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="20.43" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="46.9" y="485" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="49.87" y="495.5" ></text>
+</g>
+<g >
+<title>std::panicking::catch_unwind::do_call (6,006,006 samples, 0.15%)</title><rect x="51.7" y="373" width="1.7" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="54.72" y="383.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,001,001 samples, 0.02%)</title><rect x="50.0" y="501" width="0.3" height="15.0" fill="rgb(221,75,17)" rx="2" ry="2" />
+<text  x="53.01" y="511.5" ></text>
+</g>
+<g >
+<title>__ctype_b_loc (1,001,001 samples, 0.02%)</title><rect x="10.6" y="485" width="0.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="13.57" y="495.5" ></text>
+</g>
+<g >
+<title>OPENSSL_strcasecmp (1,001,001 samples, 0.02%)</title><rect x="32.9" y="261" width="0.2" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="35.86" y="271.5" ></text>
+</g>
+<g >
+<title>_dl_open (1,001,001 samples, 0.02%)</title><rect x="23.7" y="341" width="0.3" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="26.72" y="351.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVec&lt;T,A&gt;::with_capacity_in (1,001,001 samples, 0.02%)</title><rect x="621.3" y="325" width="0.3" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="624.29" y="335.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.9" y="389" width="0.2" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.86" y="399.5" ></text>
+</g>
+<g >
+<title>PyType_IsSubtype (1,001,001 samples, 0.02%)</title><rect x="1183.7" y="229" width="0.3" height="15.0" fill="rgb(254,228,54)" rx="2" ry="2" />
+<text  x="1186.71" y="239.5" ></text>
+</g>
+<g >
+<title>[python3.12] (1,001,001 samples, 0.02%)</title><rect x="1188.6" y="309" width="0.3" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="1191.57" y="319.5" ></text>
+</g>
+<g >
+<title>[python3.12] (9,009,009 samples, 0.22%)</title><rect x="12.9" y="421" width="2.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="15.86" y="431.5" ></text>
+</g>
+</g>
+</svg>

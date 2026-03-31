@@ -44,9 +44,40 @@ fn matmul_relu_pyo3<'py>(
     Ok(c.into_pyarray(py))
 }
 
+#[pyfunction]
+#[pyo3(signature = (a_ptr, b_ptr, c_ptr, m, k, n))]
+fn matmul_relu_frankenstein(
+    a_ptr: usize, 
+    b_ptr: usize,
+    c_ptr: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    let a = a_ptr as *const f64;
+    let b = b_ptr as *const f64;
+    let c = c_ptr as *mut f64;
+
+    unsafe {
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0;
+                for p in 0..k {
+                    let a_val = *a.add(i * k + p);
+                    let b_val = *b.add(p * n + j);
+                    s += a_val * b_val;
+                }
+                let out_val = if s > 0.0 { s } else { 0.0 };
+                *c.add(i * n + j) = out_val;
+            }
+        }
+    }
+}
+
 // 注册 Python 模块
 #[pymodule]
 fn pyo3_lib(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(matmul_relu_pyo3, m)?)?;
+    m.add_function(wrap_pyfunction!(matmul_relu_frankenstein, m)?)?;
     Ok(())
 }

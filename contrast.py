@@ -19,7 +19,7 @@ print("Pyo3 version Result:\n", C_pyo3)
 # ==========================================
 # [路线二] ctypes 调用
 # ==========================================
-lib_path = os.path.join(os.path.dirname(__file__), "rs_kernel", "debug", "release", "librs_kernel.so")
+lib_path = os.path.join(os.path.dirname(__file__), "rs_kernel","target", "release", "librs_kernel.so")
 rs_lib = ctypes.cdll.LoadLibrary(lib_path)
 
 # 指定 C 接口签名

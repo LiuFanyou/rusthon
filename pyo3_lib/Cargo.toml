@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
  
 [dependencies]
-pyo3 = {version = "0.21", feature = ["extension-moduel"]}
+pyo3 = {version = "0.21", features = ["extension-module"]}
 numpy = "0.21"
 ndarray = "0.15.6"
 
@@ -12,3 +12,6 @@ ndarray = "0.15.6"
 name = "pyo3_lib"
 crate-type = ["cdylib"]
 
+[profile.release]
+debug = 1               # 保留基本的行号和符号信息 (1 或 true 都可以)
+force-frame-pointers = true  # 强制保留帧指针，不许优化掉！

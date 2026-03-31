@@ -10,3 +10,6 @@ venv/
 *.dll
 *.so
 *.dylib
+
+perf.data
+perf.data.old
